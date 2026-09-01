@@ -1,0 +1,8 @@
+node_modules
+dist
+.next
+.sites-runtime
+.git
+api/.venv
+api/**/__pycache__
+*.zip
