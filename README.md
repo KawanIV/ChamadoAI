@@ -11,6 +11,8 @@ Central de chamados com abertura pública conversacional, gestão em lista e Kan
 
 O portal inicial usa o slug `zoho-suporte`. O primeiro administrador é criado com `BOOTSTRAP_ADMIN_EMAIL` e `BOOTSTRAP_ADMIN_PASSWORD`.
 
+Se você tentou uma versão anterior que falhou durante a imagem web, force a reconstrução com `docker compose build --no-cache web` antes de executar novamente.
+
 ## Testes
 
 - Interface: `npm test`
