@@ -1,6 +1,6 @@
 import pytest
 from fastapi import HTTPException
-from app.assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_document, extract_document, normalize_summary, read_conversation_state, sign_conversation_state
+from app.assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_document, extract_document, normalize_summary, question_is_repeated, read_conversation_state, sign_conversation_state
 
 def test_intake_and_support_assistants_have_separate_scopes():
     assert "não resolver o problema" in INTAKE_PROMPT
@@ -30,3 +30,8 @@ def test_text_documents_are_cleaned_and_chunked():
 def test_executable_document_types_are_rejected():
     with pytest.raises(HTTPException) as error:extract_document("atalho.exe","application/octet-stream",b"MZ"+b"x"*100)
     assert error.value.status_code==415
+
+def test_repeated_questions_are_detected_even_with_small_wording_changes():
+    previous=["Em qual módulo do Zoho CRM o erro acontece?"]
+    assert question_is_repeated("Qual é o módulo do Zoho CRM em que esse erro acontece?",previous)
+    assert not question_is_repeated("Qual mensagem aparece na tela?",previous)

@@ -1,6 +1,6 @@
 import test from "node:test";import assert from "node:assert/strict";import fs from "node:fs";
 const page=fs.readFileSync(new URL("../app/page.tsx",import.meta.url),"utf8");
-test("MVP expõe login e superfícies protegidas",()=>{for(const text of ["Acessar central","Administrador","Prestador","Chamados","Inteligência Artificial","Registrar resolução","Usuários cadastrados"])assert.match(page,new RegExp(text))});
+test("MVP expõe login e superfícies protegidas",()=>{for(const text of ["Acessar central","Administrador","Prestador","Chamados","Visão geral","Inteligência Artificial","Registrar resolução","Prestadores cadastrados"])assert.match(page,new RegExp(text))});
 test("o fechamento revisado controla a base de conhecimento",()=>{assert.match(page,/Adicionar à base de conhecimento/);assert.match(page,/Resolver chamado/)})
 test("modelos são carregados dinamicamente do backend",()=>{assert.match(page,/api\/admin\/ai\/models/);assert.match(page,/models\.map/);assert.doesNotMatch(page,/Ternary-Bonsai 8B|RWKV-7 7B/)})
 test("requisições autenticadas usam proxy de mesma origem e cookie HttpOnly",()=>{assert.match(page,/fetch\(`\/backend/);assert.match(page,/credentials:"same-origin"/);assert.doesNotMatch(page,/localStorage.*token|sessionStorage.*token|localhost:8001/)})
@@ -8,3 +8,6 @@ test("proxy interno não expõe o endereço da API ao navegador",()=>{const prox
 test("portal separa suporte virtual e abertura limitada",()=>{for(const text of ["Assistente virtual","Assistente de abertura","está digitando","Pergunta ${questionCount} de 5","Gerar resumo agora","Resumo do chamado","Enviar chamado"])assert.match(page,new RegExp(text.replace(/[${}]/g,"\\$&")))})
 test("administrador pode alimentar a base com documentos",()=>{for(const text of ["Base de conhecimento","Adicionar documento","PDF, DOCX, TXT ou Markdown","/api/admin/knowledge/documents"])assert.match(page,new RegExp(text))})
 test("abertura mantém identificação e permite reenviar falhas demoradas",()=>{for(const text of ["Seu nome","Seu setor","Não consegui concluir agora","Enviar novamente","requester_name:identity.requester_name","department:identity.department"])assert.match(page,new RegExp(text))})
+test("administração não renderiza a central de chamados",()=>{assert.match(page,/user\.role==="agent"\?\<Nav active=\{route==="tickets"\}/);assert.match(page,/route==="tickets"&&user\.role==="agent"/);assert.match(page,/\/api\/admin\/metrics\?days=/)})
+test("lista e Kanban mostram dados operacionais e permitem movimentação",()=>{for(const text of ["Solicitante","Setor","Prioridade","Abertura","Encerrado","draggable","onDragStart","onDrop","status_history"])assert.match(page,new RegExp(text))})
+test("abertura anuncia cinco perguntas e conserva resumo antecipado",()=>{assert.match(page,/farei 5 perguntas/);assert.match(page,/Gerar resumo agora/);assert.match(page,/Pergunta \$\{questionCount\} de 5/)})

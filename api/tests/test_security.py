@@ -1,8 +1,9 @@
+import pytest
 from fastapi import HTTPException
 from app.config import Settings
-from app.models import Ticket, User
-from app.security import Principal, create_access_token, decode_access_token, hash_password, require_admin, sign_public_context, verify_password
-from app.main import verify_context
+from app.models import Ticket, TicketStatus, User
+from app.security import Principal, create_access_token, decode_access_token, hash_password, require_admin, require_agent, sign_public_context, verify_password
+from app.main import ALLOWED_TRANSITIONS, verify_context
 
 def test_database_password_with_url_characters_keeps_the_correct_host():
     password = "forte@com:/#caracteres?reservados"
@@ -43,6 +44,14 @@ def test_agent_cannot_access_admin_configuration():
     try:require_admin(Principal(user_id="u1",tenant_id="t1",role="agent"))
     except HTTPException as exc:assert exc.status_code==403
     else:raise AssertionError("agent recebeu acesso administrativo")
+
+def test_admin_cannot_access_provider_ticket_management():
+    with pytest.raises(HTTPException) as error:require_agent(Principal(user_id="u1",tenant_id="t1",role="admin"))
+    assert error.value.status_code==403
+
+def test_closed_is_a_terminal_ticket_stage():
+    assert TicketStatus.closed in ALLOWED_TRANSITIONS[TicketStatus.resolved]
+    assert ALLOWED_TRANSITIONS[TicketStatus.closed]==set()
 
 def test_public_context_is_bound_to_slug():
     token=sign_public_context("zoho-suporte")

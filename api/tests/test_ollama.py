@@ -16,6 +16,8 @@ def test_json_contract_rejects_wrong_shapes():
     assert not valid_json_contract({"action":"question","message":"Outra pergunta"},"summary")
     assert valid_json_contract({"action":"summary","message":"Revise","summary":{}},"summary")
     assert not valid_json_contract({"action":"answer","message":""},"support")
+    assert not valid_json_contract({"action":"question","message":"Qual módulo apresenta erro?"},"question",["Qual módulo apresenta o erro?"])
+    assert valid_json_contract({"action":"question","message":"Quando o erro começou?"},"question",["Qual módulo apresenta o erro?"])
 
 @pytest.mark.asyncio
 async def test_invalid_model_output_is_retried_silently(monkeypatch):

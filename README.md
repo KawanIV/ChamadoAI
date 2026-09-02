@@ -1,8 +1,8 @@
 # Chamados — MVP de suporte Zoho
 
-Central de chamados com dois assistentes públicos, gestão em lista e Kanban, registro completo, resolução estruturada, documentos internos e seleção de modelos instalados no Ollama.
+Central de chamados com dois assistentes públicos, gestão em lista e Kanban arrastável, histórico de etapas, resolução estruturada, documentos internos e seleção de modelos instalados no Ollama.
 
-As áreas internas exigem login. O administrador gerencia usuários e a IA; o prestador acessa e resolve chamados. O portal de abertura permanece público.
+As áreas internas exigem login. O administrador gerencia prestadores, documentos e IA e acompanha apenas métricas agregadas da plataforma. O prestador é o único perfil que acessa, movimenta e resolve chamados. O portal de abertura permanece público.
 
 ## Executar
 
@@ -22,7 +22,7 @@ Entre na tela de login com esses dois valores. Em **Usuários**, o administrador
 O portal público oferece dois caminhos:
 
 - **Assistente virtual:** consulta documentos e resoluções aprovadas. Quando não encontra base suficiente, oferece a abertura de um chamado sem inventar uma resposta.
-- **Assistente de abertura:** mantém nome e setor em campos fixos, faz somente perguntas úteis para entender a demanda, com limite máximo de cinco, e gera um resumo editável antes do envio.
+- **Assistente de abertura:** mantém nome e setor em campos fixos, anuncia e faz cinco perguntas úteis sem repetir assuntos. Na primeira mensagem, verifica se existe chamado semelhante sem revelar dados de outro solicitante. Após a quinta resposta, gera um resumo editável; o usuário também pode antecipar isso com **Gerar resumo agora**.
 
 Respostas do modelo que não respeitam o JSON esperado são refeitas silenciosamente por até 90 segundos. Durante esse período, a interface mantém o indicador de digitação. Se o limite for atingido, a própria conversa oferece **Enviar novamente**.
 
@@ -39,6 +39,7 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 
 - isolamento por `tenant_id` e políticas RLS forçadas no PostgreSQL;
 - autorização administrativa validada na API;
+- separação de funções: administradores recebem somente métricas agregadas e prestadores gerenciam chamados;
 - senha com Argon2 e sessão JWT curta armazenada em cookie `HttpOnly`;
 - links públicos assinados e vinculados ao tenant;
 - rate limit no login e portal público;
@@ -48,5 +49,7 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 - resoluções entram no RAG somente após confirmação do atendente.
 - documentos da base são isolados por empresa, limitados e tratados como conteúdo não confiável;
 - o contador de perguntas da abertura é assinado pelo servidor e não depende do navegador.
+- perguntas repetidas são rejeitadas no backend e refeitas silenciosamente pelo modelo;
+- cada mudança de etapa, inclusive **Resolvido** e **Encerrado**, recebe data e responsável em histórico próprio.
 
 Para produção externa, coloque um proxy HTTPS na frente do `web`, remova a porta pública da API e substitua o limitador em memória por Redis.

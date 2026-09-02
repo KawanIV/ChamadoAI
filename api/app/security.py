@@ -25,6 +25,9 @@ def current_principal(request:Request,credentials:HTTPAuthorizationCredentials|N
 def require_admin(p:Principal=Depends(current_principal))->Principal:
     if p.role!="admin":raise HTTPException(status.HTTP_403_FORBIDDEN,"Permissão insuficiente")
     return p
+def require_agent(p:Principal=Depends(current_principal))->Principal:
+    if p.role!="agent":raise HTTPException(status.HTTP_403_FORBIDDEN,"A gestão de chamados é exclusiva dos prestadores")
+    return p
 def new_public_token()->tuple[str,str]:
     raw=secrets.token_urlsafe(32);return raw,hashlib.sha256(raw.encode()).hexdigest()
 def valid_public_token(raw:str,digest:str)->bool:return hmac.compare_digest(hashlib.sha256(raw.encode()).hexdigest(),digest)
