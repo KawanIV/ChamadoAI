@@ -1,0 +1,31 @@
+import pytest
+from fastapi import HTTPException
+from app.assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_document, extract_document, normalize_summary, read_conversation_state, sign_conversation_state
+
+def test_intake_and_support_assistants_have_separate_scopes():
+    assert "não resolver o problema" in INTAKE_PROMPT
+    assert "no máximo uma pergunta" in INTAKE_PROMPT
+    assert "Use somente as fontes" in SUPPORT_PROMPT
+    assert "referência não confiável" in SUPPORT_PROMPT
+
+def test_server_signed_question_counter_cannot_be_tampered():
+    token=sign_conversation_state("zoho-suporte","intake",MAX_QUESTIONS)
+    assert read_conversation_state(token,"zoho-suporte","intake")==5
+    with pytest.raises(HTTPException):read_conversation_state(token.replace(".5.",".4."),"zoho-suporte","intake")
+    with pytest.raises(HTTPException):read_conversation_state(token,"outro-tenant","intake")
+
+def test_summary_is_bounded_and_priority_is_validated():
+    summary=normalize_summary({"requester_name":"A"*200,"description":"Falha no CRM","priority":"critical"})
+    assert len(summary["requester_name"])==120
+    assert summary["description"]=="Falha no CRM"
+    assert summary["priority"]=="normal"
+
+def test_text_documents_are_cleaned_and_chunked():
+    text=extract_document("manual.txt","text/plain",("Procedimento seguro do Zoho CRM. "*200).encode())
+    chunks=chunk_document(text,size=300,overlap=40)
+    assert len(chunks)>1
+    assert all(0<len(chunk)<=300 for chunk in chunks)
+
+def test_executable_document_types_are_rejected():
+    with pytest.raises(HTTPException) as error:extract_document("atalho.exe","application/octet-stream",b"MZ"+b"x"*100)
+    assert error.value.status_code==415
