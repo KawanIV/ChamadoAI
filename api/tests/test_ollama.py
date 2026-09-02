@@ -1,6 +1,6 @@
 import pytest
 from app import main, ollama
-from app.ollama import ask_json, model_supports_chat, parse_json_content, sanitize_model_payload, valid_json_contract, visible_model_content
+from app.ollama import ask_json, contract_error, model_supports_chat, parse_json_content, sanitize_model_payload, valid_json_contract, visible_model_content
 from app.ai_provider import validate_api_base_url
 from app.schemas import AIConfigIn
 from app.security import Principal
@@ -38,6 +38,19 @@ def test_structured_reasoning_blocks_are_ignored():
     content=[{"type":"reasoning","text":"cadeia interna"},{"type":"text","text":'{"action":"answer","message":"Somente resposta"}'}]
     assert parse_json_content(content)["message"]=="Somente resposta"
     assert visible_model_content('</think>Resposta após marcador incompleto')=="Resposta após marcador incompleto"
+
+def test_conversation_sample_strips_unclosed_reasoning_and_rejects_question_lists():
+    raw='O usuário está sem acesso e devo analisar opções internas. </think> Olá Valdir. Por favor, descreva:\n- Quem é o usuário?\n- O que está tentando fazer?\n- Quando isso acontece?'
+    visible=visible_model_content(raw)
+    assert "devo analisar" not in visible
+    assert visible.startswith("Olá Valdir")
+    error=contract_error({"action":"question","message":visible},"question",context_messages=["Estou sem acesso ao Zoho Sign"])
+    assert error=="a resposta deve conter exatamente uma pergunta"
+
+def test_question_contract_accepts_one_contextual_question_and_blocks_fixed_identity():
+    valid="Quando você tenta acessar o Zoho Sign, aparece alguma mensagem de erro ou a tela não carrega?"
+    assert contract_error({"action":"question","message":valid},"question",context_messages=["Estou sem acesso ao Zoho Sign"]) is None
+    assert contract_error({"action":"question","message":"Qual é o seu nome?"},"question")=="nome e setor já são coletados nos campos fixos"
 
 def test_embedding_only_model_cannot_be_used_as_chat_model():
     assert not model_supports_chat({"embedding"})

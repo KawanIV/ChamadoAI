@@ -1,4 +1,4 @@
-import asyncio, json, re, time
+import asyncio, json, re, time, unicodedata
 import httpx
 from fastapi import HTTPException
 from .config import get_settings
@@ -21,6 +21,16 @@ async def model_capabilities(model:str)->set[str]:
 def model_supports_chat(capabilities:set[str])->bool:
     return not capabilities or "completion" in capabilities
 DEFAULT_RULES={"allow_plain_text_repair":True,"reject_repeated_questions":True,"require_context_reference":False,"require_summary_fields":True}
+def question_shape_error(message:str)->str|None:
+    value=message.strip()
+    if len(value)>700:return "pergunta longa demais"
+    if value.count("?")!=1:return "a resposta deve conter exatamente uma pergunta"
+    if re.search(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+",value):return "a resposta não pode usar lista de perguntas"
+    normalized="".join(character for character in unicodedata.normalize("NFKD",value.lower()) if not unicodedata.combining(character))
+    identity_patterns=(r"\bquem e o usuario\b",r"\bqual (?:e )?o seu nome\b",r"\binforme (?:o )?seu nome\b",r"\bqual (?:e )?o seu setor\b",r"\binforme (?:o )?seu setor\b",r"\bnome e setor\b")
+    if any(re.search(pattern,normalized) for pattern in identity_patterns):return "nome e setor já são coletados nos campos fixos"
+    return None
+
 def contract_error(payload:object,contract:str,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,rules:dict|None=None)->str|None:
     applied={**DEFAULT_RULES,**(rules or {})}
     if not isinstance(payload,dict):return "formato JSON inválido"
@@ -35,6 +45,8 @@ def contract_error(payload:object,contract:str,forbidden_questions:list[str]|Non
     if contract in {"question","intake"}:
         if action=="summary" and contract=="intake" and isinstance(payload.get("summary"),dict):return None
         if action!="question":return "ação de pergunta inválida"
+        shape_error=question_shape_error(message)
+        if shape_error:return shape_error
         if applied["reject_repeated_questions"] and question_is_repeated(message,forbidden_questions or []):return "pergunta repetida"
         if applied["require_context_reference"] and not question_has_context(message,context_messages or []):return "pergunta sem referência ao contexto"
         return None
@@ -110,7 +122,10 @@ async def ask_json(model:str,system:str,messages:list[dict],context_size:int=819
     applied={**DEFAULT_RULES,**(rules or {})};deadline=time.monotonic()+max(15,min(timeout_seconds,300));attempt=0;last_reason="tempo de resposta excedido"
     async with httpx.AsyncClient() as client:
         while time.monotonic()<deadline:
-            attempt+=1;remaining=max(1,deadline-time.monotonic());request_timeout=min(remaining,max(15,min(120,timeout_seconds*.7)));correction="" if attempt==1 else "\nA resposta anterior não respeitou o contrato. Responda somente com JSON válido e, se for uma pergunta, identifique nela o assunto concreto descrito pelo usuário, sem usar referências vagas."
+            attempt+=1;remaining=max(1,deadline-time.monotonic());request_timeout=min(remaining,max(15,min(120,timeout_seconds*.7)))
+            if attempt==1:correction=""
+            elif contract in {"question","intake"}:correction=f"\nA resposta anterior foi rejeitada por: {last_reason}. Responda somente com JSON válido. Faça exatamente uma pergunta curta e autocontida sobre o problema concreto descrito pelo usuário, sem listas, sem repetir assuntos e sem perguntar nome ou setor."
+            else:correction=f"\nA resposta anterior foi rejeitada por: {last_reason}. Responda somente com JSON válido e respeite exatamente o contrato solicitado."
             try:
                 prompt=[{"role":"system","content":system+correction},*safe]
                 if external:
