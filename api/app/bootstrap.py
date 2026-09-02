@@ -10,6 +10,8 @@ async def ensure_runtime_schema(db):
         """CREATE TABLE IF NOT EXISTS knowledge_chunks(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid NOT NULL REFERENCES tenants(id),document_id uuid NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,chunk_index integer NOT NULL,content text NOT NULL,UNIQUE(document_id,chunk_index))""",
         """CREATE TABLE IF NOT EXISTS ticket_status_history(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid NOT NULL REFERENCES tenants(id),ticket_id uuid NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,status varchar(30) NOT NULL,changed_by uuid REFERENCES users(id),entered_at timestamptz NOT NULL DEFAULT now())""",
         """CREATE TABLE IF NOT EXISTS usage_events(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid NOT NULL REFERENCES tenants(id),event_type varchar(40) NOT NULL,model varchar(120),success boolean NOT NULL DEFAULT true,duration_ms integer,created_at timestamptz NOT NULL DEFAULT now())""",
+        "ALTER TABLE ai_configs ADD COLUMN IF NOT EXISTS api_base_url varchar(500)",
+        "ALTER TABLE ai_configs ADD COLUMN IF NOT EXISTS api_key_encrypted bytea",
         "CREATE INDEX IF NOT EXISTS knowledge_documents_tenant_idx ON knowledge_documents(tenant_id,created_at DESC)",
         "CREATE INDEX IF NOT EXISTS knowledge_chunks_tenant_idx ON knowledge_chunks(tenant_id,document_id)",
         "CREATE INDEX IF NOT EXISTS ticket_status_history_tenant_idx ON ticket_status_history(tenant_id,ticket_id,entered_at)",

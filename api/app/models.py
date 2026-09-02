@@ -1,6 +1,6 @@
 import enum, uuid
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, LargeBinary, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -20,7 +20,7 @@ class TicketStatusHistory(Base):
 class Resolution(Base):
     __tablename__="resolutions"; id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4); tenant_id:Mapped[uuid.UUID]=mapped_column(ForeignKey("tenants.id"),index=True); ticket_id:Mapped[uuid.UUID]=mapped_column(ForeignKey("tickets.id"),unique=True); confirmed_problem:Mapped[str]=mapped_column(Text); root_cause:Mapped[str]=mapped_column(Text); solution:Mapped[str]=mapped_column(Text); validation:Mapped[str]=mapped_column(Text); reusable:Mapped[bool]=mapped_column(Boolean,default=False); sanitized_document:Mapped[dict|None]=mapped_column(JSONB,nullable=True)
 class AIConfig(Base):
-    __tablename__="ai_configs"; tenant_id:Mapped[uuid.UUID]=mapped_column(ForeignKey("tenants.id"),primary_key=True); provider:Mapped[str]=mapped_column(String(30),default="ollama"); model:Mapped[str]=mapped_column(String(120)); embedding_model:Mapped[str]=mapped_column(String(120)); context_size:Mapped[int]=mapped_column(default=8192); max_tokens:Mapped[int]=mapped_column(default=512); temperature:Mapped[str]=mapped_column(String(8),default="0.2")
+    __tablename__="ai_configs"; tenant_id:Mapped[uuid.UUID]=mapped_column(ForeignKey("tenants.id"),primary_key=True); provider:Mapped[str]=mapped_column(String(30),default="ollama"); model:Mapped[str]=mapped_column(String(120)); embedding_model:Mapped[str]=mapped_column(String(120)); api_base_url:Mapped[str|None]=mapped_column(String(500),nullable=True); api_key_encrypted:Mapped[bytes|None]=mapped_column(LargeBinary,nullable=True); context_size:Mapped[int]=mapped_column(default=8192); max_tokens:Mapped[int]=mapped_column(default=512); temperature:Mapped[str]=mapped_column(String(8),default="0.2")
 class KnowledgeDocument(Base):
     __tablename__="knowledge_documents"; id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4); tenant_id:Mapped[uuid.UUID]=mapped_column(ForeignKey("tenants.id"),index=True); title:Mapped[str]=mapped_column(String(180)); filename:Mapped[str]=mapped_column(String(255)); content_type:Mapped[str]=mapped_column(String(100)); sha256:Mapped[str]=mapped_column(String(64)); status:Mapped[str]=mapped_column(String(20),default="active"); uploaded_by:Mapped[uuid.UUID]=mapped_column(ForeignKey("users.id")); created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
 class KnowledgeChunk(Base):

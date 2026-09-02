@@ -7,7 +7,7 @@ As áreas internas exigem login. O administrador gerencia prestadores, documento
 ## Executar
 
 1. Copie `.env.example` para `.env` e troque todos os segredos.
-2. Confirme que o Ollama está ativo na máquina e que o nome em `DEFAULT_MODEL` coincide com `ollama list`.
+2. Para usar o Ollama, confirme que ele está ativo na máquina e que o nome em `DEFAULT_MODEL` coincide com `ollama list`.
 3. Execute `docker compose up --build`.
 4. Abra `http://localhost:3001`. A interface encaminha as requisições internamente para a API. Para diagnóstico, a API também responde em `http://localhost:8001/health`.
 
@@ -17,7 +17,15 @@ O navegador não acessa mais a porta da API diretamente. Login, chat e administr
 
 O portal inicial usa o slug `zoho-suporte`. O primeiro administrador é criado com `BOOTSTRAP_ADMIN_EMAIL` e `BOOTSTRAP_ADMIN_PASSWORD`.
 
-Entre na tela de login com esses dois valores. Em **Usuários**, o administrador pode criar contas de prestador. Em **Inteligência Artificial**, a aplicação consulta `/api/tags` e mostra todos os modelos realmente instalados no Ollama.
+Defina também `AI_CREDENTIALS_KEY` no `.env` antes de salvar segredos de APIs externas. No PowerShell, você pode gerar uma chave com:
+
+```powershell
+[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+```
+
+Guarde esse valor e não o altere depois: ele protege as credenciais já gravadas.
+
+Entre na tela de login com esses dois valores. Em **Prestadores**, o administrador pode criar contas de atendimento. Em **Inteligência Artificial**, é possível escolher o Ollama ou uma API externa compatível com Chat Completions. Existem presets para OpenAI, DeepSeek, Groq e OpenRouter, além de URL personalizada. No modo Ollama, a aplicação consulta `/api/tags` e mostra todos os modelos realmente instalados.
 
 O portal público oferece dois caminhos:
 
@@ -45,6 +53,8 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 - rate limit no login e portal público;
 - CORS restrito e cabeçalhos de segurança;
 - Ollama acessado somente pelo backend e modelos validados contra `/api/tags`;
+- segredos de APIs externas cifrados no PostgreSQL com `pgcrypto`/AES-256 e nunca devolvidos ao navegador;
+- APIs externas limitadas a HTTPS, sem credenciais na URL e com bloqueio de destinos privados/reservados;
 - containers sem privilégios, API/banco em rede interna e sistema de arquivos somente leitura;
 - resoluções entram no RAG somente após confirmação do atendente.
 - documentos da base são isolados por empresa, limitados e tratados como conteúdo não confiável;

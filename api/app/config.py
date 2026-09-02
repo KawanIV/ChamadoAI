@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     ollama_url: str = "http://ollama:11434"
     default_model: str = "ternary-bonsai:8b"
+    ai_credentials_key: SecretStr | None = None
     environment: str = "production"
     cookie_secure: bool = False
 

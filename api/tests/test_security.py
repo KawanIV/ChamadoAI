@@ -29,6 +29,13 @@ def test_python_enums_match_the_existing_varchar_database_columns():
     assert Ticket.__table__.c.status.type.native_enum is False
     assert Ticket.__table__.c.status.type.length == 30
 
+def test_ai_credentials_are_binary_and_runtime_schema_is_migrated():
+    from app.models import AIConfig
+    from pathlib import Path
+    assert str(AIConfig.__table__.c.api_key_encrypted.type)=="BLOB"
+    bootstrap=Path(__file__).resolve().parents[1].joinpath("app/bootstrap.py").read_text()
+    assert "api_key_encrypted bytea" in bootstrap
+
 def test_passwords_are_argon2_and_verify():
     digest=hash_password("uma-senha-bem-forte")
     assert digest.startswith("$argon2")
