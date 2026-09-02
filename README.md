@@ -27,12 +27,14 @@ Guarde esse valor e não o altere depois: ele protege as credenciais já gravada
 
 Entre na tela de login com esses dois valores. Em **Prestadores**, o administrador pode criar contas de atendimento. Em **Inteligência Artificial**, é possível escolher o Ollama ou uma API externa compatível com Chat Completions. Existem presets para OpenAI, DeepSeek, Groq e OpenRouter, além de URL personalizada. No modo Ollama, a aplicação consulta `/api/tags` e mostra todos os modelos realmente instalados.
 
+Depois de salvar a configuração, use **Testar modelo**. O teste confirma que o modelo selecionado consegue cumprir o contrato de resposta antes de colocá-lo no chat. Modelos identificados pelo Ollama como exclusivos para embeddings não podem ser salvos como modelo de conversação.
+
 O portal público oferece dois caminhos:
 
 - **Assistente virtual:** consulta documentos e resoluções aprovadas. Quando não encontra base suficiente, oferece a abertura de um chamado sem inventar uma resposta.
-- **Assistente de abertura:** mantém nome e setor em campos fixos, anuncia e faz cinco perguntas úteis sem repetir assuntos. Na primeira mensagem, verifica se existe chamado semelhante sem revelar dados de outro solicitante. Após a quinta resposta, gera um resumo editável; o usuário também pode antecipar isso com **Gerar resumo agora**.
+- **Assistente de abertura:** mantém nome e setor em campos fixos, anuncia e faz cinco perguntas úteis sem repetir assuntos. Cada pergunta cita o módulo, ação, erro ou sintoma já descrito; mensagens curtas ou ambíguas geram uma confirmação explícita, sem o modelo presumir o significado. Na primeira mensagem, verifica se existe chamado semelhante sem revelar dados de outro solicitante. Após a quinta resposta, gera um resumo editável; o usuário também pode antecipar isso com **Gerar resumo agora**.
 
-Respostas do modelo que não respeitam o JSON esperado são refeitas silenciosamente por até 90 segundos. Durante esse período, a interface mantém o indicador de digitação. Se o limite for atingido, a própria conversa oferece **Enviar novamente**.
+Respostas do modelo que não respeitam o contrato esperado são refeitas silenciosamente por até 90 segundos. A integração aceita JSON puro, blocos de código JSON e modelos que não oferecem modo JSON nativo, mas só entrega à interface uma resposta que passe pela validação final. Durante esse período, a interface mantém o indicador de digitação. Se o limite for atingido, a própria conversa oferece **Enviar novamente**.
 
 Em **Base de conhecimento**, administradores podem enviar PDF, DOCX, TXT e Markdown de até 10 MB. Os arquivos são validados, têm o texto extraído e são divididos em trechos pesquisáveis. Instalações existentes recebem as novas tabelas automaticamente durante a inicialização da API.
 
@@ -60,6 +62,7 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 - documentos da base são isolados por empresa, limitados e tratados como conteúdo não confiável;
 - o contador de perguntas da abertura é assinado pelo servidor e não depende do navegador.
 - perguntas repetidas são rejeitadas no backend e refeitas silenciosamente pelo modelo;
+- perguntas vagas que não mencionam o contexto do usuário também são rejeitadas e refeitas;
 - cada mudança de etapa, inclusive **Resolvido** e **Encerrado**, recebe data e responsável em histórico próprio.
 
 Para produção externa, coloque um proxy HTTPS na frente do `web`, remova a porta pública da API e substitua o limitador em memória por Redis.

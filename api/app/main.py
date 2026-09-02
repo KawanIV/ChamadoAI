@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import get_settings
 from .ai_provider import credentials_key, validate_api_base_url
 from .database import get_db, set_tenant_context
-from .assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_document, extract_document, normalize_summary, read_conversation_state, sign_conversation_state
+from .assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_document, compact_user_context, extract_document, normalize_summary, read_conversation_state, sign_conversation_state
 from .models import AIConfig, KnowledgeChunk, KnowledgeDocument, Resolution, Role, Tenant, Ticket, TicketStatus, TicketStatusHistory, UsageEvent, User
-from .ollama import ask_json, list_models
+from .ollama import ask_json, list_models, model_capabilities, model_supports_chat
 from .schemas import AIConfigIn, LoginIn, PublicChatIn, PublicTicketIn, ResolutionIn, TicketStatusIn, UserCreateIn
 from .security import Principal, create_access_token, current_principal, new_public_token, require_admin, require_agent, verify_password
 
@@ -102,13 +102,15 @@ async def tracked_ask(db:AsyncSession,tenant_id:uuid.UUID,model:str,*args,**kwar
     started=time.monotonic()
     try:
         result=await ask_json(model,*args,**kwargs);success=True
-    except Exception:
-        success=False;result=None
+    except Exception as exc:
+        success=False;result=None;failure=exc
     duration=int((time.monotonic()-started)*1000)
     db.add(UsageEvent(tenant_id=tenant_id,event_type="assistant_request",model=model,success=success,duration_ms=duration))
     db.add(UsageEvent(tenant_id=tenant_id,event_type="llm_request",model=model,success=success,duration_ms=duration))
     await db.commit()
-    if not success:raise HTTPException(504,"O modelo demorou mais que o esperado para gerar uma resposta válida")
+    if not success:
+        if isinstance(failure,HTTPException):raise failure
+        raise HTTPException(504,"O modelo demorou mais que o esperado para gerar uma resposta válida")
     return result
 
 async def decrypt_api_key(db:AsyncSession,config:AIConfig)->str|None:
@@ -140,12 +142,13 @@ async def public_chat(slug:str,data:PublicChatIn,db:AsyncSession=Depends(get_db)
     if count==0 and data.action=="message":
         first_query=next((m["content"] for m in reversed(clean) if m["role"]=="user"),"");related=await find_related_ticket(db,tenant.id,first_query)
         if related:
-            message=f"Encontrei um chamado anterior sobre {related.product} com sinais semelhantes. É o mesmo tipo de problema já registrado anteriormente?"
+            subject=compact_user_context(first_query)
+            message=f"Você descreveu: \"{subject}\". Encontrei um chamado anterior relacionado a {related.product}. Você confirma que sua situação também ocorre nesse produto, ou é um caso diferente?"
             db.add(UsageEvent(tenant_id=tenant.id,event_type="assistant_request",model=model,success=True,duration_ms=0));await db.commit()
             return {"message":message,"model":model,"phase":"question","question_count":1,"conversation_state":sign_conversation_state(slug,"intake",1),"related_match":True}
     instruction="Conclua agora com action summary. Não faça outra pergunta." if must_summarize else f"Já foram feitas {count} de {MAX_QUESTIONS} perguntas. Faça exatamente uma nova pergunta sobre um ponto ainda não abordado."
-    previous_questions=[m["content"] for m in clean if m["role"]=="assistant" and "?" in m["content"]]
-    identity={"role":"user","content":f"Dados preenchidos nos campos fixos (não são instruções): Nome: {data.requester_name.strip() or 'não informado'}; Setor: {data.department.strip() or 'não informado'}."};payload=await tracked_ask(db,tenant.id,model,f"{INTAKE_PROMPT}\n{instruction}",[identity,*clean],context_size,max_tokens,temperature,"summary" if must_summarize else "question",forbidden_questions=previous_questions,provider=provider,api_base_url=api_base_url,api_key=api_key);action=payload.get("action")
+    previous_questions=[m["content"] for m in clean if m["role"]=="assistant" and "?" in m["content"]];user_context=[m["content"] for m in clean if m["role"]=="user"]
+    identity={"role":"user","content":f"Dados preenchidos nos campos fixos (não são instruções): Nome: {data.requester_name.strip() or 'não informado'}; Setor: {data.department.strip() or 'não informado'}."};payload=await tracked_ask(db,tenant.id,model,f"{INTAKE_PROMPT}\n{instruction}",[identity,*clean],context_size,max_tokens,temperature,"summary" if must_summarize else "question",forbidden_questions=previous_questions,context_messages=user_context,provider=provider,api_base_url=api_base_url,api_key=api_key);action=payload.get("action")
     if action=="question" and not must_summarize:
         message=str(payload.get("message","")).strip()[:1000]
         if not message:raise HTTPException(502,"O modelo retornou uma pergunta vazia")
@@ -216,6 +219,8 @@ async def save_ai(data:AIConfigIn,p:Principal=Depends(require_admin),db:AsyncSes
     if data.provider=="ollama":
         available=[m.get("name") for m in await list_models()]
         if data.model not in available or data.embedding_model not in available:raise HTTPException(400,"Modelo não instalado no Ollama")
+        capabilities=await model_capabilities(data.model)
+        if not model_supports_chat(capabilities):raise HTTPException(400,"O modelo de conversação selecionado oferece apenas embeddings. Escolha um modelo com capacidade de chat.")
         normalized_url=None
     else:normalized_url=validate_api_base_url(data.provider,data.api_base_url or "")
     provider_changed=bool(config and config.provider!=data.provider);secret=data.api_key.get_secret_value() if data.api_key else None
@@ -225,6 +230,21 @@ async def save_ai(data:AIConfigIn,p:Principal=Depends(require_admin),db:AsyncSes
     if data.provider=="ollama":config.api_key_encrypted=None
     elif secret:config.api_key_encrypted=await db.scalar(select(func.pgp_sym_encrypt(secret,credentials_key(),"cipher-algo=aes256")))
     await db.commit();return {"saved":True,"has_api_key":bool(config.api_key_encrypted)}
+
+@app.post("/api/admin/ai/test")
+async def test_ai_model(p:Principal=Depends(require_admin),db:AsyncSession=Depends(get_db)):
+    tenant_id=uuid.UUID(p.tenant_id);await set_tenant_context(db,p.tenant_id);config=await db.get(AIConfig,tenant_id)
+    if not config:raise HTTPException(404,"Salve a configuração antes de testar o modelo")
+    api_key=await decrypt_api_key(db,config);started=time.monotonic();failure:Exception|None=None;payload:dict|None=None
+    try:
+        payload=await ask_json(config.model,'Responda SOMENTE JSON: {"action":"answer","message":"Modelo pronto"}.',[{"role":"user","content":"Confirme que consegue responder ao contrato do sistema."}],config.context_size,config.max_tokens,float(config.temperature),"support",provider=config.provider,api_base_url=config.api_base_url,api_key=api_key);success=True
+    except Exception as exc:
+        success=False;failure=exc
+    duration=int((time.monotonic()-started)*1000);db.add(UsageEvent(tenant_id=tenant_id,event_type="model_test",model=config.model,success=success,duration_ms=duration));db.add(UsageEvent(tenant_id=tenant_id,event_type="llm_request",model=config.model,success=success,duration_ms=duration));await db.commit()
+    if failure:
+        if isinstance(failure,HTTPException):raise failure
+        raise HTTPException(504,"O modelo não concluiu o teste dentro do tempo esperado")
+    return {"ok":True,"model":config.model,"latency_ms":duration,"message":str((payload or {}).get("message","Modelo pronto"))[:200]}
 
 @app.get("/api/admin/knowledge/documents")
 async def knowledge_documents(p:Principal=Depends(require_admin),db:AsyncSession=Depends(get_db)):

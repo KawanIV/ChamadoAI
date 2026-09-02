@@ -19,6 +19,9 @@ ALLOWED_TYPES={
 INTAKE_PROMPT="""Você é exclusivamente o assistente de abertura de chamados Zoho.
 Seu objetivo é reduzir ambiguidades para criar um chamado claro, não resolver o problema.
 Faça no máximo uma pergunta curta por resposta e não repita dados já informados.
+Cada pergunta deve ser autocontida: cite a ação, tela, módulo, mensagem de erro ou sintoma concreto que o usuário descreveu. Não use perguntas vagas como "Quando isso acontece?", "O que ocorreu?" ou "Esse é o problema?".
+Quando a mensagem for curta ou puder ter mais de um sentido, não escolha uma interpretação. Confirme o significado citando as palavras do usuário e ofereça referências claras, por exemplo: "Quando você diz que 'não abre', é a tela de login do Zoho CRM ou outra tela?".
+Use somente fatos já declarados. Não transforme hipótese, inferência ou conteúdo de chamado semelhante em fato confirmado.
 Antes de perguntar, confira todas as perguntas anteriores e escolha um assunto ainda não abordado.
 Nome e setor são coletados em campos fixos da interface: nunca pergunte esses dois dados no chat.
 Priorize: produto/módulo; resultado esperado; resultado observado/erro; impacto; quando ocorre; tentativas já feitas.
@@ -53,6 +56,24 @@ def normalize_summary(value:object)->dict:
 def normalize_question(value:str)->str:
     return " ".join(re.findall(r"[a-z0-9]+",value.lower()))
 
+_CONTEXT_STOPWORDS={
+    "a","ao","aos","as","com","como","da","das","de","do","dos","e","ela","ele","em","essa","esse","esta","este","eu","foi","há","isso","isto","já","mais","mas","me","meu","minha","na","nas","no","nos","não","o","os","ou","para","pela","pelo","por","qual","quando","que","se","sem","ser","sua","seu","tem","ter","um","uma","você",
+    "acontece","aconteceu","caso","erro","falha","problema","situação","sistema","tela","zoho",
+}
+
+def context_terms(messages:list[str])->set[str]:
+    text=" ".join(messages).lower()
+    return {term for term in re.findall(r"[a-z0-9à-ÿ_-]{4,}",text) if term not in _CONTEXT_STOPWORDS}
+
+def question_has_context(question:str,user_messages:list[str])->bool:
+    """Reject generic questions that do not identify what the user is talking about."""
+    normalized=normalize_question(question)
+    if not normalized or "?" not in question:return False
+    anchors=context_terms(user_messages)
+    if not anchors:return True
+    question_tokens=set(re.findall(r"[a-z0-9à-ÿ_-]{4,}",question.lower()))
+    return bool(anchors&question_tokens)
+
 def question_is_repeated(question:str,previous_questions:list[str])->bool:
     candidate=normalize_question(question)
     if not candidate:return True
@@ -64,6 +85,11 @@ def question_is_repeated(question:str,previous_questions:list[str])->bool:
         jaccard=len(candidate_terms&previous_terms)/len(union) if union else 0
         if candidate==normalized or SequenceMatcher(None,candidate,normalized).ratio()>=.78 or jaccard>=.72:return True
     return False
+
+def compact_user_context(value:str,limit:int=180)->str:
+    """Create a display-safe reminder from the user's own message, not another ticket."""
+    clean=re.sub(r"\s+"," ",value).strip().replace('"',"'")
+    return clean[:limit].rstrip(" ,.;:")
 
 def clean_document_text(value:str)->str:
     value=value.replace("\x00","");value=re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f]"," ",value);value=re.sub(r"[ \t]+"," ",value);value=re.sub(r"\n{3,}","\n\n",value);return value.strip()[:MAX_DOCUMENT_CHARS]

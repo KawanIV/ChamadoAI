@@ -1,6 +1,6 @@
 import pytest
 from app import main, ollama
-from app.ollama import ask_json, valid_json_contract
+from app.ollama import ask_json, model_supports_chat, parse_json_content, valid_json_contract
 from app.ai_provider import validate_api_base_url
 from app.schemas import AIConfigIn
 from app.security import Principal
@@ -20,6 +20,17 @@ def test_json_contract_rejects_wrong_shapes():
     assert not valid_json_contract({"action":"answer","message":""},"support")
     assert not valid_json_contract({"action":"question","message":"Qual módulo apresenta erro?"},"question",["Qual módulo apresenta o erro?"])
     assert valid_json_contract({"action":"question","message":"Quando o erro começou?"},"question",["Qual módulo apresenta o erro?"])
+    assert not valid_json_contract({"action":"question","message":"Quando isso acontece?"},"question",context_messages=["O CRM não salva a proposta"])
+    assert valid_json_contract({"action":"question","message":"Quando o CRM deixa de salvar a proposta?"},"question",context_messages=["O CRM não salva a proposta"])
+
+def test_json_parser_accepts_code_fences_and_explanatory_prefixes():
+    assert parse_json_content('```json\n{"action":"answer","message":"Ok"}\n```')["action"]=="answer"
+    assert parse_json_content('Resposta: {"action":"answer","message":"Ok"}')["message"]=="Ok"
+
+def test_embedding_only_model_cannot_be_used_as_chat_model():
+    assert not model_supports_chat({"embedding"})
+    assert model_supports_chat({"completion","tools"})
+    assert model_supports_chat(set())
 
 @pytest.mark.asyncio
 async def test_invalid_model_output_is_retried_silently(monkeypatch):
@@ -39,6 +50,24 @@ async def test_invalid_model_output_is_retried_silently(monkeypatch):
     result=await ask_json("modelo","sistema",[{"role":"user","content":"gere"}],contract="summary")
     assert result["action"]=="summary"
     assert len(calls)==2
+
+@pytest.mark.asyncio
+async def test_ollama_model_without_native_json_mode_uses_compatible_fallback(monkeypatch):
+    calls=[]
+    class FakeResponse:
+        def __init__(self,status_code,content):self.status_code=status_code;self.content=content
+        def json(self):return {"message":{"content":self.content}}
+    class FakeClient:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*_):return None
+        async def post(self,*args,**kwargs):
+            calls.append(kwargs["json"])
+            return FakeResponse(400,"") if len(calls)==1 else FakeResponse(200,'```json\n{"action":"answer","message":"Compatível"}\n```')
+    monkeypatch.setattr(ollama.httpx,"AsyncClient",FakeClient)
+    result=await ask_json("modelo-sem-json","sistema",[{"role":"user","content":"ajuda"}],contract="support")
+    assert result["message"]=="Compatível"
+    assert calls[0]["format"]=="json"
+    assert "format" not in calls[1]
 
 def test_external_provider_urls_block_ssrf_and_embedded_credentials():
     assert validate_api_base_url("openai","https://api.openai.com/v1/")=="https://api.openai.com/v1"

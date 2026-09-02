@@ -1,6 +1,6 @@
 import pytest
 from fastapi import HTTPException
-from app.assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_document, extract_document, normalize_summary, question_is_repeated, read_conversation_state, sign_conversation_state
+from app.assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_document, extract_document, normalize_summary, question_has_context, question_is_repeated, read_conversation_state, sign_conversation_state
 
 def test_intake_and_support_assistants_have_separate_scopes():
     assert "não resolver o problema" in INTAKE_PROMPT
@@ -35,3 +35,14 @@ def test_repeated_questions_are_detected_even_with_small_wording_changes():
     previous=["Em qual módulo do Zoho CRM o erro acontece?"]
     assert question_is_repeated("Qual é o módulo do Zoho CRM em que esse erro acontece?",previous)
     assert not question_is_repeated("Qual mensagem aparece na tela?",previous)
+
+def test_intake_questions_must_name_the_user_context():
+    context=["O Zoho CRM não salva a proposta depois que clico em enviar"]
+    assert not question_has_context("Quando isso acontece?",context)
+    assert not question_has_context("Qual mensagem aparece na tela?",context)
+    assert question_has_context("Qual mensagem aparece quando o Zoho CRM não salva a proposta?",context)
+
+def test_ambiguous_user_word_is_repeated_in_the_clarification():
+    context=["Ele travou"]
+    assert not question_has_context("Qual sistema você está usando?",context)
+    assert question_has_context("Quando você diz que ele travou, qual tela ou ação estava usando?",context)
