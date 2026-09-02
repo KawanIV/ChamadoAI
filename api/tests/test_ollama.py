@@ -16,12 +16,13 @@ async def test_models_endpoint_returns_entire_ollama_catalog(monkeypatch):
 def test_json_contract_rejects_wrong_shapes():
     assert valid_json_contract({"action":"question","message":"Qual módulo?"},"intake")
     assert not valid_json_contract({"action":"question","message":"Outra pergunta"},"summary")
-    assert valid_json_contract({"action":"summary","message":"Revise","summary":{}},"summary")
+    assert valid_json_contract({"action":"summary","message":"Revise","summary":{"description":"CRM não salva a proposta"}},"summary")
     assert not valid_json_contract({"action":"answer","message":""},"support")
     assert not valid_json_contract({"action":"question","message":"Qual módulo apresenta erro?"},"question",["Qual módulo apresenta o erro?"])
     assert valid_json_contract({"action":"question","message":"Quando o erro começou?"},"question",["Qual módulo apresenta o erro?"])
-    assert not valid_json_contract({"action":"question","message":"Quando isso acontece?"},"question",context_messages=["O CRM não salva a proposta"])
-    assert valid_json_contract({"action":"question","message":"Quando o CRM deixa de salvar a proposta?"},"question",context_messages=["O CRM não salva a proposta"])
+    strict={"require_context_reference":True}
+    assert not valid_json_contract({"action":"question","message":"Quando isso acontece?"},"question",context_messages=["O CRM não salva a proposta"],rules=strict)
+    assert valid_json_contract({"action":"question","message":"Quando o CRM deixa de salvar a proposta?"},"question",context_messages=["O CRM não salva a proposta"],rules=strict)
 
 def test_json_parser_accepts_code_fences_and_explanatory_prefixes():
     assert parse_json_content('```json\n{"action":"answer","message":"Ok"}\n```')["action"]=="answer"
@@ -34,7 +35,7 @@ def test_embedding_only_model_cannot_be_used_as_chat_model():
 
 @pytest.mark.asyncio
 async def test_invalid_model_output_is_retried_silently(monkeypatch):
-    replies=iter(["resposta fora do formato",'{"action":"summary","message":"Revise","summary":{}}'])
+    replies=iter(["resposta fora do formato",'{"action":"summary","message":"Revise","summary":{"description":"Falha ao salvar no CRM"}}'])
     calls=[]
     class FakeResponse:
         status_code=200

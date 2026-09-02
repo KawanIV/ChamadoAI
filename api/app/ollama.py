@@ -20,15 +20,28 @@ async def model_capabilities(model:str)->set[str]:
 
 def model_supports_chat(capabilities:set[str])->bool:
     return not capabilities or "completion" in capabilities
-def valid_json_contract(payload:object,contract:str,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None)->bool:
-    if not isinstance(payload,dict):return False
+DEFAULT_RULES={"allow_plain_text_repair":True,"reject_repeated_questions":True,"require_context_reference":False,"require_summary_fields":True}
+def contract_error(payload:object,contract:str,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,rules:dict|None=None)->str|None:
+    applied={**DEFAULT_RULES,**(rules or {})}
+    if not isinstance(payload,dict):return "formato JSON inválido"
     action=payload.get("action");message=payload.get("message")
-    if not isinstance(message,str) or not message.strip():return False
-    if contract=="support":return action in {"answer","offer_ticket"}
-    if contract=="summary":return action=="summary" and isinstance(payload.get("summary"),dict)
-    if contract=="question":return action=="question" and not question_is_repeated(message,forbidden_questions or []) and question_has_context(message,context_messages or [])
-    if contract=="intake":return (action=="question" and not question_is_repeated(message,forbidden_questions or []) and question_has_context(message,context_messages or [])) or (action=="summary" and isinstance(payload.get("summary"),dict))
-    return False
+    if not isinstance(message,str) or not message.strip():return "mensagem vazia"
+    if contract=="support":return None if action in {"answer","offer_ticket"} else "ação de suporte inválida"
+    if contract=="summary":
+        summary=payload.get("summary")
+        if action!="summary" or not isinstance(summary,dict):return "resumo fora do contrato"
+        if applied["require_summary_fields"] and not str(summary.get("description","")).strip():return "resumo sem descrição"
+        return None
+    if contract in {"question","intake"}:
+        if action=="summary" and contract=="intake" and isinstance(payload.get("summary"),dict):return None
+        if action!="question":return "ação de pergunta inválida"
+        if applied["reject_repeated_questions"] and question_is_repeated(message,forbidden_questions or []):return "pergunta repetida"
+        if applied["require_context_reference"] and not question_has_context(message,context_messages or []):return "pergunta sem referência ao contexto"
+        return None
+    return "contrato desconhecido"
+
+def valid_json_contract(payload:object,contract:str,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,rules:dict|None=None)->bool:
+    return contract_error(payload,contract,forbidden_questions,context_messages,rules) is None
 
 def parse_json_content(content:object)->object:
     if isinstance(content,list):content="".join(str(item.get("text", "")) if isinstance(item,dict) else str(item) for item in content)
@@ -55,34 +68,42 @@ def _external_variants(model:str,prompt:list[dict],max_tokens:int,temperature:fl
         variants.append({key:value for key,value in base.items() if key!="temperature"})
     return variants
 
-async def ask_json(model:str,system:str,messages:list[dict],context_size:int=8192,max_tokens:int=512,temperature:float=.2,contract:str="intake",forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,provider:str="ollama",api_base_url:str|None=None,api_key:str|None=None)->dict:
+async def ask_json(model:str,system:str,messages:list[dict],context_size:int=8192,max_tokens:int=512,temperature:float=.2,contract:str="intake",forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,provider:str="ollama",api_base_url:str|None=None,api_key:str|None=None,timeout_seconds:int=90,rules:dict|None=None)->dict:
     safe=[{"role":m["role"],"content":m["content"][:5000]} for m in messages[-16:]]
     external=provider!="ollama";base_url=None
     if external:
         if not api_base_url or not api_key:raise HTTPException(503,"A credencial do provedor externo não está configurada")
         base_url=validate_api_base_url(provider,api_base_url);await ensure_public_destination(base_url)
-    deadline=time.monotonic()+90;attempt=0
+    applied={**DEFAULT_RULES,**(rules or {})};deadline=time.monotonic()+max(15,min(timeout_seconds,300));attempt=0;last_reason="tempo de resposta excedido"
     async with httpx.AsyncClient() as client:
         while time.monotonic()<deadline:
-            attempt+=1;remaining=max(1,deadline-time.monotonic());correction="" if attempt==1 else "\nA resposta anterior não respeitou o contrato. Responda somente com JSON válido e, se for uma pergunta, identifique nela o assunto concreto descrito pelo usuário, sem usar referências vagas."
+            attempt+=1;remaining=max(1,deadline-time.monotonic());request_timeout=min(remaining,max(15,min(120,timeout_seconds*.7)));correction="" if attempt==1 else "\nA resposta anterior não respeitou o contrato. Responda somente com JSON válido e, se for uma pergunta, identifique nela o assunto concreto descrito pelo usuário, sem usar referências vagas."
             try:
                 prompt=[{"role":"system","content":system+correction},*safe]
                 if external:
                     response=None
                     for request_body in _external_variants(model,prompt,max_tokens,temperature,provider):
-                        response=await client.post(f"{base_url}/chat/completions",timeout=min(45,remaining),headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"},json=request_body)
+                        response=await client.post(f"{base_url}/chat/completions",timeout=request_timeout,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"},json=request_body)
                         if response.status_code!=400:break
                     if response is None:raise ValueError("Sem resposta do provedor")
                 else:
                     request_body={"model":model,"stream":False,"format":"json","messages":prompt,"options":{"temperature":temperature,"num_ctx":context_size,"num_predict":max_tokens}}
-                    response=await client.post(f"{get_settings().ollama_url}/api/chat",timeout=min(45,remaining),json=request_body)
+                    response=await client.post(f"{get_settings().ollama_url}/api/chat",timeout=request_timeout,json=request_body)
                     if response.status_code==400:
-                        fallback_body={key:value for key,value in request_body.items() if key!="format"};response=await client.post(f"{get_settings().ollama_url}/api/chat",timeout=min(45,remaining),json=fallback_body)
+                        fallback_body={key:value for key,value in request_body.items() if key!="format"};response=await client.post(f"{get_settings().ollama_url}/api/chat",timeout=request_timeout,json=fallback_body)
                 if 400<=response.status_code<500 and response.status_code not in {408,429}:raise HTTPException(502,"O provedor de IA recusou a requisição")
                 if response.status_code>=500 or response.status_code in {408,429}:raise httpx.HTTPStatusError("Falha temporária",request=response.request,response=response)
-                body=response.json();content=body.get("choices",[{}])[0].get("message",{}).get("content","") if external else body.get("message",{}).get("content","");payload=parse_json_content(content)
-                if valid_json_contract(payload,contract,forbidden_questions,context_messages):return payload
+                body=response.json();content=body.get("choices",[{}])[0].get("message",{}).get("content","") if external else body.get("message",{}).get("content","")
+                try:payload=parse_json_content(content)
+                except (ValueError,json.JSONDecodeError):
+                    if applied["allow_plain_text_repair"] and isinstance(content,str) and content.strip() and contract in {"support","question","intake"}:payload={"action":"answer" if contract=="support" else "question","message":content.strip()}
+                    else:raise
+                last_reason=contract_error(payload,contract,forbidden_questions,context_messages,applied) or ""
+                if not last_reason:return payload
             except HTTPException:raise
-            except (httpx.HTTPError,AttributeError,KeyError,TypeError,ValueError,json.JSONDecodeError):pass
+            except httpx.TimeoutException:last_reason="tempo de geração excedido"
+            except httpx.HTTPError:last_reason="falha temporária de comunicação com o provedor"
+            except (ValueError,json.JSONDecodeError):last_reason="formato JSON inválido"
+            except (AttributeError,KeyError,TypeError):last_reason="resposta incompleta do provedor"
             if time.monotonic()<deadline:await asyncio.sleep(min(1.5*attempt,5))
-    raise HTTPException(504,"O modelo demorou mais que o esperado para gerar uma resposta válida")
+    raise HTTPException(504,f"O modelo não entregou uma resposta válida dentro do limite: {last_reason}")

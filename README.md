@@ -25,7 +25,11 @@ Defina também `AI_CREDENTIALS_KEY` no `.env` antes de salvar segredos de APIs e
 
 Guarde esse valor e não o altere depois: ele protege as credenciais já gravadas.
 
-Entre na tela de login com esses dois valores. Em **Prestadores**, o administrador pode criar contas de atendimento. Em **Inteligência Artificial**, é possível escolher o Ollama ou uma API externa compatível com Chat Completions. Existem presets para OpenAI, DeepSeek, Groq e OpenRouter, além de URL personalizada. No modo Ollama, a aplicação consulta `/api/tags` e mostra todos os modelos realmente instalados.
+Entre na tela de login com esses dois valores. Em **Prestadores**, o administrador pode criar contas de atendimento. A área **Inteligência Artificial** possui três menus:
+
+- **Adicionar Modelos:** reconhece todos os modelos reais do Ollama por `/api/tags` e conecta uma API externa compatível com Chat Completions. Existem presets para OpenAI, DeepSeek, Groq e OpenRouter, além de URL personalizada.
+- **Configurar Modelos:** seleciona separadamente o modelo de conversação e o modelo de embeddings, inclusive com origens diferentes. Também configura contexto máximo, tokens por resposta, temperatura, tempo limite entre 15 e 300 segundos e as regras que validam a saída do modelo.
+- **Skills:** importa um arquivo Markdown por link HTTPS direto, permite escolher em qual assistente ele atua, testar a instrução com o modelo de conversação e ativá-la somente depois da validação.
 
 Depois de salvar a configuração, use **Testar modelo**. O teste confirma que o modelo selecionado consegue cumprir o contrato de resposta antes de colocá-lo no chat. Modelos identificados pelo Ollama como exclusivos para embeddings não podem ser salvos como modelo de conversação.
 
@@ -34,7 +38,9 @@ O portal público oferece dois caminhos:
 - **Assistente virtual:** consulta documentos e resoluções aprovadas. Quando não encontra base suficiente, oferece a abertura de um chamado sem inventar uma resposta.
 - **Assistente de abertura:** mantém nome e setor em campos fixos, anuncia e faz cinco perguntas úteis sem repetir assuntos. Cada pergunta cita o módulo, ação, erro ou sintoma já descrito; mensagens curtas ou ambíguas geram uma confirmação explícita, sem o modelo presumir o significado. Na primeira mensagem, verifica se existe chamado semelhante sem revelar dados de outro solicitante. Após a quinta resposta, gera um resumo editável; o usuário também pode antecipar isso com **Gerar resumo agora**.
 
-Respostas do modelo que não respeitam o contrato esperado são refeitas silenciosamente por até 90 segundos. A integração aceita JSON puro, blocos de código JSON e modelos que não oferecem modo JSON nativo, mas só entrega à interface uma resposta que passe pela validação final. Durante esse período, a interface mantém o indicador de digitação. Se o limite for atingido, a própria conversa oferece **Enviar novamente**.
+Respostas do modelo que não respeitam o contrato esperado são refeitas silenciosamente pelo tempo configurado. A integração aceita JSON puro, blocos de código JSON e, quando a regra estiver ativa, repara texto simples útil para o contrato interno. O administrador pode manter o bloqueio de perguntas repetidas, exigir os campos mínimos do resumo e optar por uma validação mais rigorosa de referência ao contexto. A falha final informa qual regra não foi satisfeita, em vez de apresentar apenas uma mensagem genérica. Durante esse período, a interface mantém o indicador de digitação. Se o limite for atingido, a própria conversa oferece **Enviar novamente**.
+
+As Skills são tratadas como instruções administrativas não confiáveis: somente arquivos de texto/Markdown de até 128 KB são aceitos, redirecionamentos e destinos privados são bloqueados, o conteúdo nunca é executado e não pode substituir as regras de segurança ou permissões do sistema.
 
 Em **Base de conhecimento**, administradores podem enviar PDF, DOCX, TXT e Markdown de até 10 MB. Os arquivos são validados, têm o texto extraído e são divididos em trechos pesquisáveis. Instalações existentes recebem as novas tabelas automaticamente durante a inicialização da API.
 
@@ -57,6 +63,7 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 - Ollama acessado somente pelo backend e modelos validados contra `/api/tags`;
 - segredos de APIs externas cifrados no PostgreSQL com `pgcrypto`/AES-256 e nunca devolvidos ao navegador;
 - APIs externas limitadas a HTTPS, sem credenciais na URL e com bloqueio de destinos privados/reservados;
+- Skills importadas somente por HTTPS direto, limitadas, isoladas por empresa, inativas por padrão e sem execução de código;
 - containers sem privilégios, API/banco em rede interna e sistema de arquivos somente leitura;
 - resoluções entram no RAG somente após confirmação do atendente.
 - documentos da base são isolados por empresa, limitados e tratados como conteúdo não confiável;

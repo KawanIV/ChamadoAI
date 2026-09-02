@@ -18,6 +18,22 @@ class AIConfigIn(BaseModel):
         if self.provider!="ollama" and not (self.api_base_url or "").strip():raise ValueError("Informe a URL base da API")
         if self.provider=="ollama" and not self.embedding_model:raise ValueError("Selecione o modelo de embeddings do Ollama")
         return self
+class AIConnectionIn(BaseModel):
+    provider:Literal["ollama","openai","deepseek","groq","openrouter","custom"]="ollama";api_base_url:str|None=Field(default=None,max_length=500);api_key:SecretStr|None=Field(default=None,min_length=8,max_length=512)
+    @model_validator(mode="after")
+    def external_url(self):
+        if self.provider!="ollama" and not (self.api_base_url or "").strip():raise ValueError("Informe a URL base da API")
+        return self
+class ValidResponseRules(BaseModel):
+    allow_plain_text_repair:bool=True;reject_repeated_questions:bool=True;require_context_reference:bool=False;require_summary_fields:bool=True
+class AIRuntimeIn(BaseModel):
+    model:str=Field(pattern=r"^[a-zA-Z0-9._:/-]{1,120}$");embedding_model:str=Field(pattern=r"^[a-zA-Z0-9._:/-]{1,120}$");conversation_source:Literal["ollama","external"]="ollama";embedding_source:Literal["ollama","external"]="ollama";context_size:int=Field(ge=1024,le=32768);max_tokens:int=Field(ge=64,le=8192);temperature:float=Field(ge=0,le=1);response_timeout_seconds:int=Field(ge=15,le=300);valid_response_rules:ValidResponseRules=Field(default_factory=ValidResponseRules)
+class SkillImportIn(BaseModel):
+    source_url:str=Field(min_length=12,max_length=1000);scope:Literal["all","intake","support"]="all"
+class SkillUpdateIn(BaseModel):
+    active:bool;scope:Literal["all","intake","support"]="all"
+class SkillTestIn(BaseModel):
+    prompt:str=Field(min_length=3,max_length=1500)
 class UserCreateIn(BaseModel):
     name:str=Field(min_length=2,max_length=120);email:str=Field(max_length=254);password:str=Field(min_length=12,max_length=128);role:Literal["agent"]="agent"
 class PublicChatIn(BaseModel):

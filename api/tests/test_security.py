@@ -36,6 +36,20 @@ def test_ai_credentials_are_binary_and_runtime_schema_is_migrated():
     bootstrap=Path(__file__).resolve().parents[1].joinpath("app/bootstrap.py").read_text()
     assert "api_key_encrypted bytea" in bootstrap
 
+@pytest.mark.asyncio
+async def test_runtime_schema_sends_json_defaults_as_raw_driver_sql():
+    from app.bootstrap import ensure_runtime_schema
+    executed=[]
+    class Connection:
+        async def exec_driver_sql(self,statement):executed.append(statement)
+    class Session:
+        async def connection(self):return Connection()
+        async def execute(self,*_):raise AssertionError("text() reinterpretaria :true e :false como parâmetros")
+    await ensure_runtime_schema(Session())
+    rule_statement=next(statement for statement in executed if "valid_response_rules" in statement)
+    assert '"allow_plain_text_repair":true' in rule_statement
+    assert '"require_context_reference":false' in rule_statement
+
 def test_passwords_are_argon2_and_verify():
     digest=hash_password("uma-senha-bem-forte")
     assert digest.startswith("$argon2")

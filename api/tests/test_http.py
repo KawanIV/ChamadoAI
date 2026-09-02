@@ -21,6 +21,11 @@ def test_admin_is_forbidden_from_ticket_listing_before_database_access():
 
 def test_admin_routes_require_authentication():
     assert client.get("/api/admin/ai/models").status_code==401
+    assert client.get("/api/admin/ai/catalog").status_code==401
+    assert client.get("/api/admin/ai/runtime").status_code==401
+    assert client.get("/api/admin/ai/connection").status_code==401
+    assert client.get("/api/admin/ai/skills").status_code==401
+    assert client.post("/api/admin/ai/skills/import",json={"source_url":"https://example.com/SKILL.md","scope":"all"}).status_code==401
     assert client.get("/api/admin/users").status_code==401
     assert client.get("/api/admin/knowledge/documents").status_code==401
     assert client.post("/api/admin/knowledge/documents").status_code==401
