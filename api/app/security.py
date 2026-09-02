@@ -2,7 +2,7 @@ import hashlib, hmac, secrets, time
 from datetime import datetime, timedelta, timezone
 import jwt
 from argon2 import PasswordHasher
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from .config import get_settings
@@ -15,10 +15,13 @@ def verify_password(value:str,digest:str)->bool:
     except Exception:return False
 def create_access_token(p:Principal)->str:
     now=datetime.now(timezone.utc);return jwt.encode({"sub":p.user_id,"tenant_id":p.tenant_id,"role":p.role,"iat":now,"exp":now+timedelta(minutes=30)},get_settings().jwt_secret,algorithm="HS256")
-def current_principal(credentials:HTTPAuthorizationCredentials|None=Depends(bearer))->Principal:
-    if not credentials:raise HTTPException(status.HTTP_401_UNAUTHORIZED,"Autenticação necessária")
-    try:data=jwt.decode(credentials.credentials,get_settings().jwt_secret,algorithms=["HS256"],options={"require":["sub","tenant_id","role","exp"]});return Principal(user_id=data["sub"],tenant_id=data["tenant_id"],role=data["role"])
+def decode_access_token(token:str)->Principal:
+    try:data=jwt.decode(token,get_settings().jwt_secret,algorithms=["HS256"],options={"require":["sub","tenant_id","role","exp"]});return Principal(user_id=data["sub"],tenant_id=data["tenant_id"],role=data["role"])
     except jwt.PyJWTError:raise HTTPException(status.HTTP_401_UNAUTHORIZED,"Sessão inválida")
+def current_principal(request:Request,credentials:HTTPAuthorizationCredentials|None=Depends(bearer))->Principal:
+    token=credentials.credentials if credentials else request.cookies.get("chamados_session")
+    if not token:raise HTTPException(status.HTTP_401_UNAUTHORIZED,"Autenticação necessária")
+    return decode_access_token(token)
 def require_admin(p:Principal=Depends(current_principal))->Principal:
     if p.role!="admin":raise HTTPException(status.HTTP_403_FORBIDDEN,"Permissão insuficiente")
     return p

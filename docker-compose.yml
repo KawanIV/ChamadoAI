@@ -22,14 +22,15 @@ services:
       PUBLIC_LINK_SECRET: ${PUBLIC_LINK_SECRET:?defina PUBLIC_LINK_SECRET}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.local}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?defina BOOTSTRAP_ADMIN_PASSWORD}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
       OLLAMA_URL: http://host.docker.internal:11434
       DEFAULT_MODEL: ${DEFAULT_MODEL:-ternary-bonsai:8b}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     command: ["sh","-c","python -m app.bootstrap && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers"]
     depends_on:
       db: {condition: service_healthy}
     extra_hosts: ["host.docker.internal:host-gateway"]
-    ports: ["127.0.0.1:8000:8000"]
+    ports: ["127.0.0.1:8001:8000"]
     networks: [backend,frontend]
     read_only: true
     tmpfs: [/tmp]
@@ -37,9 +38,9 @@ services:
   web:
     build: .
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      API_INTERNAL_URL: http://api:8000
     depends_on: [api]
-    ports: ["3000:3000"]
+    ports: ["3001:3000"]
     networks: [frontend]
     read_only: true
     tmpfs: [/tmp]

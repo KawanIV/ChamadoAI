@@ -12,3 +12,7 @@ class ResolutionIn(BaseModel):
     confirmed_problem:str=Field(min_length=5,max_length=5000);root_cause:str=Field(min_length=5,max_length=5000);solution:str=Field(min_length=5,max_length=10000);validation:str=Field(min_length=3,max_length=3000);reusable:bool=False
 class AIConfigIn(BaseModel):
     model:str=Field(pattern=r"^[a-zA-Z0-9._:/-]{1,120}$");embedding_model:str=Field(pattern=r"^[a-zA-Z0-9._:/-]{1,120}$");context_size:int=Field(ge=1024,le=32768);max_tokens:int=Field(ge=64,le=2048);temperature:float=Field(ge=0,le=1)
+class UserCreateIn(BaseModel):
+    name:str=Field(min_length=2,max_length=120);email:str=Field(max_length=254);password:str=Field(min_length=12,max_length=128);role:str=Field(pattern=r"^(admin|agent)$")
+class PublicChatIn(BaseModel):
+    public_context:str;messages:list[dict[str,str]]=Field(min_length=1,max_length=12)

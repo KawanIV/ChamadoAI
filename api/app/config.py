@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     ollama_url: str = "http://ollama:11434"
     default_model: str = "ternary-bonsai:8b"
     environment: str = "production"
+    cookie_secure: bool = False
 
 @lru_cache
 def get_settings() -> Settings:

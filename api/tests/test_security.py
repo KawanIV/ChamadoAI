@@ -1,7 +1,5 @@
-import time
 from fastapi import HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
-from app.security import Principal, create_access_token, current_principal, hash_password, require_admin, sign_public_context, verify_password
+from app.security import Principal, create_access_token, decode_access_token, hash_password, require_admin, sign_public_context, verify_password
 from app.main import verify_context
 
 def test_passwords_are_argon2_and_verify():
@@ -12,7 +10,7 @@ def test_passwords_are_argon2_and_verify():
 
 def test_jwt_contains_server_signed_tenant():
     token=create_access_token(Principal(user_id="u1",tenant_id="t1",role="agent"))
-    p=current_principal(HTTPAuthorizationCredentials(scheme="Bearer",credentials=token))
+    p=decode_access_token(token)
     assert p.tenant_id=="t1" and p.role=="agent"
 
 def test_agent_cannot_access_admin_configuration():
