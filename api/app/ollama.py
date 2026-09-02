@@ -1,4 +1,4 @@
-import asyncio, json, time
+import asyncio, json, re, time
 import httpx
 from fastapi import HTTPException
 from .config import get_settings
@@ -43,10 +43,43 @@ def contract_error(payload:object,contract:str,forbidden_questions:list[str]|Non
 def valid_json_contract(payload:object,contract:str,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,rules:dict|None=None)->bool:
     return contract_error(payload,contract,forbidden_questions,context_messages,rules) is None
 
-def parse_json_content(content:object)->object:
-    if isinstance(content,list):content="".join(str(item.get("text", "")) if isinstance(item,dict) else str(item) for item in content)
+_REASONING_BLOCK=re.compile(r"<(think|thinking|reasoning|analysis)\b[^>]*>.*?</\1\s*>",re.IGNORECASE|re.DOTALL)
+_REASONING_OPEN=re.compile(r"<(think|thinking|reasoning|analysis)\b[^>]*>",re.IGNORECASE)
+_REASONING_CLOSE=re.compile(r"</(think|thinking|reasoning|analysis)\s*>",re.IGNORECASE)
+
+def visible_model_content(content:object)->str:
+    """Return only user-visible model output, excluding chain-of-thought blocks."""
+    if isinstance(content,list):
+        parts=[]
+        for item in content:
+            if isinstance(item,dict):
+                item_type=str(item.get("type","")).lower()
+                if any(marker in item_type for marker in ("reasoning","thinking","analysis")):continue
+                value=item.get("text","")
+                if isinstance(value,dict):value=value.get("value","")
+                if isinstance(value,str):parts.append(value)
+            elif isinstance(item,str):parts.append(item)
+        content="".join(parts)
     if not isinstance(content,str):raise ValueError("Conteúdo do modelo inválido")
-    value=content.strip()
+    value=content
+    while _REASONING_BLOCK.search(value):value=_REASONING_BLOCK.sub("",value)
+    closing=list(_REASONING_CLOSE.finditer(value))
+    if closing and not _REASONING_OPEN.search(value):value=value[closing[-1].end():]
+    opening=_REASONING_OPEN.search(value)
+    if opening:value=value[:opening.start()]
+    return value.strip()
+
+def sanitize_model_payload(payload:object)->object:
+    if not isinstance(payload,dict):return payload
+    cleaned=dict(payload)
+    if isinstance(cleaned.get("message"),str):cleaned["message"]=visible_model_content(cleaned["message"])
+    summary=cleaned.get("summary")
+    if isinstance(summary,dict):cleaned["summary"]={key:visible_model_content(value) if isinstance(value,str) else value for key,value in summary.items()}
+    cleaned.pop("think",None);cleaned.pop("thinking",None);cleaned.pop("reasoning",None);cleaned.pop("reasoning_content",None)
+    return cleaned
+
+def parse_json_content(content:object)->object:
+    value=visible_model_content(content)
     if value.startswith("```"):
         value=value.split("\n",1)[1] if "\n" in value else value[3:]
         if value.rstrip().endswith("```"):value=value.rstrip()[:-3]
@@ -94,7 +127,7 @@ async def ask_json(model:str,system:str,messages:list[dict],context_size:int=819
                 if 400<=response.status_code<500 and response.status_code not in {408,429}:raise HTTPException(502,"O provedor de IA recusou a requisição")
                 if response.status_code>=500 or response.status_code in {408,429}:raise httpx.HTTPStatusError("Falha temporária",request=response.request,response=response)
                 body=response.json();content=body.get("choices",[{}])[0].get("message",{}).get("content","") if external else body.get("message",{}).get("content","")
-                try:payload=parse_json_content(content)
+                try:payload=sanitize_model_payload(parse_json_content(content))
                 except (ValueError,json.JSONDecodeError):
                     if applied["allow_plain_text_repair"] and isinstance(content,str) and content.strip() and contract in {"support","question","intake"}:payload={"action":"answer" if contract=="support" else "question","message":content.strip()}
                     else:raise

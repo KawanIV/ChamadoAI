@@ -1,6 +1,6 @@
 import pytest
 from app import main, ollama
-from app.ollama import ask_json, model_supports_chat, parse_json_content, valid_json_contract
+from app.ollama import ask_json, model_supports_chat, parse_json_content, sanitize_model_payload, valid_json_contract, visible_model_content
 from app.ai_provider import validate_api_base_url
 from app.schemas import AIConfigIn
 from app.security import Principal
@@ -27,6 +27,17 @@ def test_json_contract_rejects_wrong_shapes():
 def test_json_parser_accepts_code_fences_and_explanatory_prefixes():
     assert parse_json_content('```json\n{"action":"answer","message":"Ok"}\n```')["action"]=="answer"
     assert parse_json_content('Resposta: {"action":"answer","message":"Ok"}')["message"]=="Ok"
+
+def test_reasoning_tags_never_reach_the_visible_model_response():
+    result=parse_json_content('<think>raciocínio privado</think>{"action":"answer","message":"Resposta final"}')
+    assert result["message"]=="Resposta final"
+    encoded=sanitize_model_payload({"action":"answer","message":"<thinking>não exibir</thinking>Ação recomendada","reasoning_content":"segredo"})
+    assert encoded=={"action":"answer","message":"Ação recomendada"}
+
+def test_structured_reasoning_blocks_are_ignored():
+    content=[{"type":"reasoning","text":"cadeia interna"},{"type":"text","text":'{"action":"answer","message":"Somente resposta"}'}]
+    assert parse_json_content(content)["message"]=="Somente resposta"
+    assert visible_model_content('</think>Resposta após marcador incompleto')=="Resposta após marcador incompleto"
 
 def test_embedding_only_model_cannot_be_used_as_chat_model():
     assert not model_supports_chat({"embedding"})
