@@ -1,6 +1,25 @@
 from fastapi import HTTPException
+from app.config import Settings
 from app.security import Principal, create_access_token, decode_access_token, hash_password, require_admin, sign_public_context, verify_password
 from app.main import verify_context
+
+def test_database_password_with_url_characters_keeps_the_correct_host():
+    password = "forte@com:/#caracteres?reservados"
+    settings = Settings(
+        _env_file=None,
+        database_url=None,
+        db_host="db",
+        db_port=5432,
+        db_name="chamados",
+        db_user="chamados",
+        db_password=password,
+        jwt_secret="test-jwt-secret-that-is-at-least-32-characters",
+        public_link_secret="test-public-secret-that-is-at-least-32-chars",
+    )
+    url = settings.sqlalchemy_database_url()
+    assert url.host == "db"
+    assert url.password == password
+    assert password not in url.render_as_string(hide_password=True)
 
 def test_passwords_are_argon2_and_verify():
     digest=hash_password("uma-senha-bem-forte")

@@ -17,7 +17,11 @@ services:
   api:
     build: ./api
     environment:
-      DATABASE_URL: postgresql+asyncpg://chamados:${POSTGRES_PASSWORD}@db:5432/chamados
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: chamados
+      DB_USER: chamados
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET}
       PUBLIC_LINK_SECRET: ${PUBLIC_LINK_SECRET:?defina PUBLIC_LINK_SECRET}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.local}

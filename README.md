@@ -13,6 +13,8 @@ As áreas internas exigem login. O administrador gerencia usuários e a IA; o pr
 
 O navegador não acessa mais a porta da API diretamente. Login, chat e administração usam `/backend`, evitando falhas por CORS, IP da máquina ou porta compilada no frontend.
 
+`POSTGRES_PASSWORD` aceita senhas fortes com caracteres especiais como `@`, `:`, `/` e `#`. A API recebe host, usuário e senha em variáveis separadas para que esses caracteres não corrompam o endereço do banco.
+
 O portal inicial usa o slug `zoho-suporte`. O primeiro administrador é criado com `BOOTSTRAP_ADMIN_EMAIL` e `BOOTSTRAP_ADMIN_PASSWORD`.
 
 Entre na tela de login com esses dois valores. Em **Usuários**, o administrador pode criar contas de prestador. Em **Inteligência Artificial**, a aplicação consulta `/api/tags` e mostra todos os modelos realmente instalados no Ollama.
