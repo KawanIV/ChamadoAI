@@ -1,6 +1,6 @@
 import pytest
 from app import main, ollama
-from app.ollama import ask_json, model_supports_chat, parse_json_content, sanitize_model_payload, valid_json_contract, visible_model_content
+from app.ollama import ask_json, contract_error, model_supports_chat, parse_json_content, parse_labeled_summary, parse_model_response, sanitize_model_payload, valid_json_contract, visible_model_content
 from app.ai_provider import validate_api_base_url
 from app.schemas import AIConfigIn
 from app.security import Principal
@@ -39,6 +39,26 @@ def test_structured_reasoning_blocks_are_ignored():
     assert parse_json_content(content)["message"]=="Somente resposta"
     assert visible_model_content('</think>Resposta após marcador incompleto')=="Resposta após marcador incompleto"
 
+def test_conversation_sample_strips_unclosed_reasoning_and_rejects_question_lists():
+    raw='O usuário está sem acesso e devo analisar opções internas. </think> Olá Valdir. Por favor, descreva:\n- Quem é o usuário?\n- O que está tentando fazer?\n- Quando isso acontece?'
+    visible=visible_model_content(raw)
+    assert "devo analisar" not in visible
+    assert visible.startswith("Olá Valdir")
+    error=contract_error({"action":"question","message":visible},"question",context_messages=["Estou sem acesso ao Zoho Sign"])
+    assert error=="a resposta deve conter exatamente uma pergunta"
+
+def test_question_contract_accepts_one_contextual_question_and_blocks_fixed_identity():
+    valid="Quando você tenta acessar o Zoho Sign, aparece alguma mensagem de erro ou a tela não carrega?"
+    assert contract_error({"action":"question","message":valid},"question",context_messages=["Estou sem acesso ao Zoho Sign"]) is None
+    assert contract_error({"action":"question","message":"Qual é o seu nome?"},"question")=="nome e setor já são coletados nos campos fixos"
+
+def test_backend_formats_plain_model_question_and_labeled_summary():
+    question=parse_model_response("Quando você tenta acessar o Zoho Sign, aparece algum erro?","question")
+    assert question=={"action":"question","message":"Quando você tenta acessar o Zoho Sign, aparece algum erro?"}
+    summary=parse_labeled_summary("Título: Sem acesso ao Sign\nDescrição: Usuário não acessa o Zoho Sign\nProduto: Zoho Sign\nPrioridade: Alta\nContato:")
+    assert summary["summary"]["title"]=="Sem acesso ao Sign"
+    assert summary["summary"]["priority"]=="high"
+
 def test_embedding_only_model_cannot_be_used_as_chat_model():
     assert not model_supports_chat({"embedding"})
     assert model_supports_chat({"completion","tools"})
@@ -46,7 +66,7 @@ def test_embedding_only_model_cannot_be_used_as_chat_model():
 
 @pytest.mark.asyncio
 async def test_invalid_model_output_is_retried_silently(monkeypatch):
-    replies=iter(["resposta fora do formato",'{"action":"summary","message":"Revise","summary":{"description":"Falha ao salvar no CRM"}}'])
+    replies=iter(["<think>somente raciocínio, sem resposta final</think>","Título: Falha no CRM\nDescrição: O CRM não salva a proposta\nProduto: Zoho CRM\nPrioridade: Normal\nContato:"])
     calls=[]
     class FakeResponse:
         status_code=200
@@ -64,7 +84,7 @@ async def test_invalid_model_output_is_retried_silently(monkeypatch):
     assert len(calls)==2
 
 @pytest.mark.asyncio
-async def test_ollama_model_without_native_json_mode_uses_compatible_fallback(monkeypatch):
+async def test_ollama_model_without_native_json_mode_uses_plain_text(monkeypatch):
     calls=[]
     class FakeResponse:
         def __init__(self,status_code,content):self.status_code=status_code;self.content=content
@@ -72,14 +92,12 @@ async def test_ollama_model_without_native_json_mode_uses_compatible_fallback(mo
     class FakeClient:
         async def __aenter__(self):return self
         async def __aexit__(self,*_):return None
-        async def post(self,*args,**kwargs):
-            calls.append(kwargs["json"])
-            return FakeResponse(400,"") if len(calls)==1 else FakeResponse(200,'```json\n{"action":"answer","message":"Compatível"}\n```')
+        async def post(self,*args,**kwargs):calls.append(kwargs["json"]);return FakeResponse(200,"Orientação compatível")
     monkeypatch.setattr(ollama.httpx,"AsyncClient",FakeClient)
     result=await ask_json("modelo-sem-json","sistema",[{"role":"user","content":"ajuda"}],contract="support")
-    assert result["message"]=="Compatível"
-    assert calls[0]["format"]=="json"
-    assert "format" not in calls[1]
+    assert result["message"]=="Orientação compatível"
+    assert len(calls)==1
+    assert "format" not in calls[0]
 
 def test_external_provider_urls_block_ssrf_and_embedded_credentials():
     assert validate_api_base_url("openai","https://api.openai.com/v1/")=="https://api.openai.com/v1"
@@ -110,3 +128,4 @@ async def test_external_provider_uses_bearer_secret_without_ollama_payload(monke
     assert calls[0][0]=="https://llm.example.com/v1/chat/completions"
     assert calls[0][1]["headers"]["Authorization"]=="Bearer segredo-api"
     assert "options" not in calls[0][1]["json"]
+    assert "response_format" not in calls[0][1]["json"]

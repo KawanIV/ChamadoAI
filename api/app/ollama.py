@@ -1,4 +1,4 @@
-import asyncio, json, re, time
+import asyncio, json, re, time, unicodedata
 import httpx
 from fastapi import HTTPException
 from .config import get_settings
@@ -21,6 +21,16 @@ async def model_capabilities(model:str)->set[str]:
 def model_supports_chat(capabilities:set[str])->bool:
     return not capabilities or "completion" in capabilities
 DEFAULT_RULES={"allow_plain_text_repair":True,"reject_repeated_questions":True,"require_context_reference":False,"require_summary_fields":True}
+def question_shape_error(message:str)->str|None:
+    value=message.strip()
+    if len(value)>700:return "pergunta longa demais"
+    if value.count("?")!=1:return "a resposta deve conter exatamente uma pergunta"
+    if re.search(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+",value):return "a resposta não pode usar lista de perguntas"
+    normalized="".join(character for character in unicodedata.normalize("NFKD",value.lower()) if not unicodedata.combining(character))
+    identity_patterns=(r"\bquem e o usuario\b",r"\bqual (?:e )?o seu nome\b",r"\binforme (?:o )?seu nome\b",r"\bqual (?:e )?o seu setor\b",r"\binforme (?:o )?seu setor\b",r"\bnome e setor\b")
+    if any(re.search(pattern,normalized) for pattern in identity_patterns):return "nome e setor já são coletados nos campos fixos"
+    return None
+
 def contract_error(payload:object,contract:str,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,rules:dict|None=None)->str|None:
     applied={**DEFAULT_RULES,**(rules or {})}
     if not isinstance(payload,dict):return "formato JSON inválido"
@@ -35,6 +45,8 @@ def contract_error(payload:object,contract:str,forbidden_questions:list[str]|Non
     if contract in {"question","intake"}:
         if action=="summary" and contract=="intake" and isinstance(payload.get("summary"),dict):return None
         if action!="question":return "ação de pergunta inválida"
+        shape_error=question_shape_error(message)
+        if shape_error:return shape_error
         if applied["reject_repeated_questions"] and question_is_repeated(message,forbidden_questions or []):return "pergunta repetida"
         if applied["require_context_reference"] and not question_has_context(message,context_messages or []):return "pergunta sem referência ao contexto"
         return None
@@ -91,12 +103,34 @@ def parse_json_content(content:object)->object:
         payload,_=json.JSONDecoder().raw_decode(value[start:])
         return payload
 
+def parse_labeled_summary(content:object)->dict:
+    value=visible_model_content(content)
+    labels={"titulo":"title","descricao":"description","produto":"product","prioridade":"priority","contato":"contact"};fields={key:"" for key in labels.values()}
+    matches=list(re.finditer(r"(?im)^\s*(?:[-*]\s*)?(Título|Descrição|Produto|Prioridade|Contato)\s*:\s*",value))
+    for index,match in enumerate(matches):
+        normalized="".join(character for character in unicodedata.normalize("NFKD",match.group(1).lower()) if not unicodedata.combining(character));end=matches[index+1].start() if index+1<len(matches) else len(value);fields[labels[normalized]]=value[match.end():end].strip()
+    if not fields["description"]:fields["description"]=value[:5000]
+    priority=fields["priority"].lower();fields["priority"]="high" if priority in {"alta","high"} else "low" if priority in {"baixa","low"} else "normal"
+    return {"action":"summary","message":"Revise o resumo antes de enviar.","summary":fields}
+
+def parse_model_response(content:object,contract:str,allow_plain_text:bool=True)->object:
+    try:return sanitize_model_payload(parse_json_content(content))
+    except (ValueError,json.JSONDecodeError):
+        if not allow_plain_text:raise
+        value=visible_model_content(content)
+        if not value:raise ValueError("Resposta final vazia")
+        if contract=="summary":return parse_labeled_summary(value)
+        if contract in {"question","intake"}:return {"action":"question","message":value}
+        if contract=="support":
+            action="offer_ticket" if re.search(r"(?i)\b(?:abrir|encaminhar|registrar)\s+(?:um\s+)?chamado\b",value) else "answer"
+            return {"action":action,"message":value}
+        raise
+
 def _external_variants(model:str,prompt:list[dict],max_tokens:int,temperature:float,provider:str)->list[dict]:
     token_keys=["max_completion_tokens","max_tokens"] if provider=="openai" else ["max_tokens","max_completion_tokens"]
     variants=[]
     for token_key in token_keys:
         base={"model":model,"messages":prompt,"temperature":temperature,token_key:max_tokens}
-        variants.append({**base,"response_format":{"type":"json_object"}})
         variants.append(base)
         variants.append({key:value for key,value in base.items() if key!="temperature"})
     return variants
@@ -110,7 +144,11 @@ async def ask_json(model:str,system:str,messages:list[dict],context_size:int=819
     applied={**DEFAULT_RULES,**(rules or {})};deadline=time.monotonic()+max(15,min(timeout_seconds,300));attempt=0;last_reason="tempo de resposta excedido"
     async with httpx.AsyncClient() as client:
         while time.monotonic()<deadline:
-            attempt+=1;remaining=max(1,deadline-time.monotonic());request_timeout=min(remaining,max(15,min(120,timeout_seconds*.7)));correction="" if attempt==1 else "\nA resposta anterior não respeitou o contrato. Responda somente com JSON válido e, se for uma pergunta, identifique nela o assunto concreto descrito pelo usuário, sem usar referências vagas."
+            attempt+=1;remaining=max(1,deadline-time.monotonic());request_timeout=min(remaining,max(15,min(120,timeout_seconds*.7)))
+            if attempt==1:correction=""
+            elif contract in {"question","intake"}:correction=f"\nA resposta anterior foi rejeitada por: {last_reason}. Entregue somente a pergunta final em texto simples. Faça exatamente uma pergunta curta e autocontida sobre o problema concreto descrito pelo usuário, sem listas, sem repetir assuntos e sem perguntar nome ou setor."
+            elif contract=="summary":correction=f"\nA resposta anterior foi rejeitada por: {last_reason}. Entregue o resumo final em texto simples, usando uma linha para cada campo: Título, Descrição, Produto, Prioridade e Contato."
+            else:correction=f"\nA resposta anterior foi rejeitada por: {last_reason}. Entregue somente a resposta final em texto simples, sem raciocínio, JSON ou Markdown."
             try:
                 prompt=[{"role":"system","content":system+correction},*safe]
                 if external:
@@ -120,17 +158,12 @@ async def ask_json(model:str,system:str,messages:list[dict],context_size:int=819
                         if response.status_code!=400:break
                     if response is None:raise ValueError("Sem resposta do provedor")
                 else:
-                    request_body={"model":model,"stream":False,"format":"json","messages":prompt,"options":{"temperature":temperature,"num_ctx":context_size,"num_predict":max_tokens}}
+                    request_body={"model":model,"stream":False,"messages":prompt,"options":{"temperature":temperature,"num_ctx":context_size,"num_predict":max_tokens}}
                     response=await client.post(f"{get_settings().ollama_url}/api/chat",timeout=request_timeout,json=request_body)
-                    if response.status_code==400:
-                        fallback_body={key:value for key,value in request_body.items() if key!="format"};response=await client.post(f"{get_settings().ollama_url}/api/chat",timeout=request_timeout,json=fallback_body)
                 if 400<=response.status_code<500 and response.status_code not in {408,429}:raise HTTPException(502,"O provedor de IA recusou a requisição")
                 if response.status_code>=500 or response.status_code in {408,429}:raise httpx.HTTPStatusError("Falha temporária",request=response.request,response=response)
                 body=response.json();content=body.get("choices",[{}])[0].get("message",{}).get("content","") if external else body.get("message",{}).get("content","")
-                try:payload=sanitize_model_payload(parse_json_content(content))
-                except (ValueError,json.JSONDecodeError):
-                    if applied["allow_plain_text_repair"] and isinstance(content,str) and content.strip() and contract in {"support","question","intake"}:payload={"action":"answer" if contract=="support" else "question","message":content.strip()}
-                    else:raise
+                payload=parse_model_response(content,contract,applied["allow_plain_text_repair"])
                 last_reason=contract_error(payload,contract,forbidden_questions,context_messages,applied) or ""
                 if not last_reason:return payload
             except HTTPException:raise

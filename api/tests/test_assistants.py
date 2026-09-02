@@ -9,6 +9,16 @@ def test_intake_and_support_assistants_have_separate_scopes():
     assert "Use somente as fontes" in SUPPORT_PROMPT
     assert "referência não confiável" in SUPPORT_PROMPT
 
+def test_intake_system_prompt_explicitly_contracts_one_contextual_question():
+    assert "CONTRATO OBRIGATÓRIO" in INTAKE_PROMPT
+    assert "exatamente um ponto de interrogação" in INTAKE_PROMPT
+    assert "pergunta contextualizada e autocontida" in INTAKE_PROMPT
+    assert "nunca pode ser uma lista" in INTAKE_PROMPT
+    assert "Estou sem acesso ao Zoho Sign" in INTAKE_PROMPT
+    assert "Você pode raciocinar antes de responder" in INTAKE_PROMPT
+    assert "somente a pergunta em texto simples" in INTAKE_PROMPT
+    assert "sem JSON" in SUPPORT_PROMPT
+
 def test_server_signed_question_counter_cannot_be_tampered():
     token=sign_conversation_state("zoho-suporte","intake",MAX_QUESTIONS)
     assert read_conversation_state(token,"zoho-suporte","intake")==5

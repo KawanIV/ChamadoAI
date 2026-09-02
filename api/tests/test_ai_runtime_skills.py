@@ -3,7 +3,7 @@ import pytest
 from pydantic import ValidationError
 from app.ollama import contract_error
 from app.schemas import AIRuntimeIn
-from app.skill_service import compiled_skills, skill_name, validate_skill_url
+from app.skill_service import compiled_skills, normalize_skill_source_url, skill_name, validate_skill_url
 
 
 def test_runtime_separates_conversation_and_embedding_sources():
@@ -38,6 +38,13 @@ def test_skill_url_requires_direct_public_https_file():
     assert validate_skill_url("https://skills.example.com/zoho/SKILL.md")=="https://skills.example.com/zoho/SKILL.md"
     for value in ["http://skills.example.com/SKILL.md","https://user:secret@skills.example.com/SKILL.md","https://skills.example.com/SKILL.md?token=secret"]:
         with pytest.raises(Exception):validate_skill_url(value)
+
+
+def test_github_and_gitlab_skill_links_are_converted_to_raw_files():
+    github="https://github.com/composio-community/awesome-codex-skills/blob/master/support-ticket-triage/SKILL.md"
+    assert normalize_skill_source_url(github)=="https://raw.githubusercontent.com/composio-community/awesome-codex-skills/master/support-ticket-triage/SKILL.md"
+    assert normalize_skill_source_url("https://github.com/acme/support/tree/main/skills/triage")=="https://raw.githubusercontent.com/acme/support/main/skills/triage/SKILL.md"
+    assert normalize_skill_source_url("https://gitlab.com/acme/support/-/blob/main/SKILL.md")=="https://gitlab.com/acme/support/-/raw/main/SKILL.md"
 
 
 def test_skill_name_and_compilation_are_bounded_and_keep_security_precedence():
