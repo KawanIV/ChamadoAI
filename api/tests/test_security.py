@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 from app.config import Settings
+from app.models import Ticket, User
 from app.security import Principal, create_access_token, decode_access_token, hash_password, require_admin, sign_public_context, verify_password
 from app.main import verify_context
 
@@ -20,6 +21,12 @@ def test_database_password_with_url_characters_keeps_the_correct_host():
     assert url.host == "db"
     assert url.password == password
     assert password not in url.render_as_string(hide_password=True)
+
+def test_python_enums_match_the_existing_varchar_database_columns():
+    assert User.__table__.c.role.type.native_enum is False
+    assert User.__table__.c.role.type.length == 20
+    assert Ticket.__table__.c.status.type.native_enum is False
+    assert Ticket.__table__.c.status.type.length == 30
 
 def test_passwords_are_argon2_and_verify():
     digest=hash_password("uma-senha-bem-forte")
