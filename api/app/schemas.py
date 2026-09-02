@@ -1,8 +1,9 @@
+from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 class LoginIn(BaseModel):
     tenant_slug:str=Field(pattern=r"^[a-z0-9-]{2,80}$");email:str=Field(max_length=254);password:str=Field(min_length=8,max_length=128)
 class PublicTicketIn(BaseModel):
-    requester_name:str=Field(min_length=2,max_length=120);department:str=Field(min_length=2,max_length=120);contact:str|None=Field(default=None,max_length=254);description:str=Field(min_length=10,max_length=5000);product:str=Field(max_length=80);public_context:str
+    requester_name:str=Field(min_length=2,max_length=120);department:str=Field(min_length=2,max_length=120);contact:str|None=Field(default=None,max_length=254);title:str|None=Field(default=None,max_length=180);description:str=Field(min_length=10,max_length=5000);product:str=Field(min_length=2,max_length=80);priority:str=Field(default="normal",pattern=r"^(low|normal|high)$");assistant_mode:Literal["intake","support"]="intake";public_context:str
     @field_validator("description")
     @classmethod
     def no_secrets(cls,v:str)->str:
@@ -15,4 +16,4 @@ class AIConfigIn(BaseModel):
 class UserCreateIn(BaseModel):
     name:str=Field(min_length=2,max_length=120);email:str=Field(max_length=254);password:str=Field(min_length=12,max_length=128);role:str=Field(pattern=r"^(admin|agent)$")
 class PublicChatIn(BaseModel):
-    public_context:str;messages:list[dict[str,str]]=Field(min_length=1,max_length=12)
+    public_context:str;assistant:Literal["intake","support"]="intake";action:Literal["message","summarize"]="message";conversation_state:str|None=None;requester_name:str=Field(default="",max_length=120);department:str=Field(default="",max_length=120);messages:list[dict[str,str]]=Field(min_length=1,max_length=16)

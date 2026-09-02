@@ -1,6 +1,6 @@
 # Chamados — MVP de suporte Zoho
 
-Central de chamados com abertura pública conversacional, gestão em lista e Kanban, registro completo, resolução estruturada e seleção de modelos instalados no Ollama.
+Central de chamados com dois assistentes públicos, gestão em lista e Kanban, registro completo, resolução estruturada, documentos internos e seleção de modelos instalados no Ollama.
 
 As áreas internas exigem login. O administrador gerencia usuários e a IA; o prestador acessa e resolve chamados. O portal de abertura permanece público.
 
@@ -18,6 +18,15 @@ O navegador não acessa mais a porta da API diretamente. Login, chat e administr
 O portal inicial usa o slug `zoho-suporte`. O primeiro administrador é criado com `BOOTSTRAP_ADMIN_EMAIL` e `BOOTSTRAP_ADMIN_PASSWORD`.
 
 Entre na tela de login com esses dois valores. Em **Usuários**, o administrador pode criar contas de prestador. Em **Inteligência Artificial**, a aplicação consulta `/api/tags` e mostra todos os modelos realmente instalados no Ollama.
+
+O portal público oferece dois caminhos:
+
+- **Assistente virtual:** consulta documentos e resoluções aprovadas. Quando não encontra base suficiente, oferece a abertura de um chamado sem inventar uma resposta.
+- **Assistente de abertura:** mantém nome e setor em campos fixos, faz somente perguntas úteis para entender a demanda, com limite máximo de cinco, e gera um resumo editável antes do envio.
+
+Respostas do modelo que não respeitam o JSON esperado são refeitas silenciosamente por até 90 segundos. Durante esse período, a interface mantém o indicador de digitação. Se o limite for atingido, a própria conversa oferece **Enviar novamente**.
+
+Em **Base de conhecimento**, administradores podem enviar PDF, DOCX, TXT e Markdown de até 10 MB. Os arquivos são validados, têm o texto extraído e são divididos em trechos pesquisáveis. Instalações existentes recebem as novas tabelas automaticamente durante a inicialização da API.
 
 Se você tentou uma versão anterior que falhou durante a imagem web, force a reconstrução com `docker compose build --no-cache web` antes de executar novamente.
 
@@ -37,5 +46,7 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 - Ollama acessado somente pelo backend e modelos validados contra `/api/tags`;
 - containers sem privilégios, API/banco em rede interna e sistema de arquivos somente leitura;
 - resoluções entram no RAG somente após confirmação do atendente.
+- documentos da base são isolados por empresa, limitados e tratados como conteúdo não confiável;
+- o contador de perguntas da abertura é assinado pelo servidor e não depende do navegador.
 
 Para produção externa, coloque um proxy HTTPS na frente do `web`, remova a porta pública da API e substitua o limitador em memória por Redis.

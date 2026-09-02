@@ -50,3 +50,6 @@ def test_public_context_is_bound_to_slug():
     try:verify_context("outro-tenant",token)
     except HTTPException as exc:assert exc.status_code==403
     else:raise AssertionError("token público atravessou tenant")
+    try:verify_context("zoho-suporte","zoho-suporte.data-invalida.assinatura")
+    except HTTPException as exc:assert exc.status_code==403
+    else:raise AssertionError("timestamp público inválido foi aceito")

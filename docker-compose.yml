@@ -33,6 +33,11 @@ services:
     command: ["sh","-c","python -m app.bootstrap && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers"]
     depends_on:
       db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["127.0.0.1:8001:8000"]
     networks: [backend,frontend]
@@ -43,7 +48,8 @@ services:
     build: .
     environment:
       API_INTERNAL_URL: http://api:8000
-    depends_on: [api]
+    depends_on:
+      api: {condition: service_healthy}
     ports: ["3001:3000"]
     networks: [frontend]
     read_only: true

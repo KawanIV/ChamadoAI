@@ -5,6 +5,7 @@ from app.assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_do
 def test_intake_and_support_assistants_have_separate_scopes():
     assert "não resolver o problema" in INTAKE_PROMPT
     assert "no máximo uma pergunta" in INTAKE_PROMPT
+    assert "nunca pergunte esses dois dados" in INTAKE_PROMPT
     assert "Use somente as fontes" in SUPPORT_PROMPT
     assert "referência não confiável" in SUPPORT_PROMPT
 
