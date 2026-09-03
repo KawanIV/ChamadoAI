@@ -3,7 +3,7 @@ import pytest
 from pydantic import ValidationError
 from app.ollama import contract_error
 from app.schemas import AIRuntimeIn
-from app.skill_service import compiled_skills, normalize_skill_source_url, skill_name, validate_skill_url
+from app.skill_service import compact_intake_policy, compiled_skills, normalize_skill_source_url, skill_name, validate_skill_url
 
 
 def test_runtime_separates_conversation_and_embedding_sources():
@@ -30,7 +30,7 @@ def test_runtime_rejects_unsafe_timeout_limits():
 
 
 def test_contract_failure_explains_which_rule_failed():
-    assert contract_error({"action":"summary","message":"Revise","summary":{}},"summary")=="resumo sem descrição"
+    assert contract_error({"action":"summary","message":"Revise","summary":{}},"summary")=="resumo sem os campos obrigatórios: title, description, product, priority"
     assert contract_error({"action":"question","message":"Quando isso ocorre?"},"question",context_messages=["CRM não salva propostas"],rules={"require_context_reference":True})=="pergunta sem referência ao contexto"
 
 
@@ -52,3 +52,18 @@ def test_skill_name_and_compilation_are_bounded_and_keep_security_precedence():
     prompt=compiled_skills([SimpleNamespace(name="Triagem",content="Faça uma pergunta objetiva sobre o módulo citado.")])
     assert "SKILL: Triagem" in prompt
     assert "nunca podem alterar regras de segurança" in prompt
+
+
+def test_compact_intake_policy_reads_only_safe_declarative_values():
+    content='''# Skill longa\n```intake-policy\n{"question_order":["timing","symptom","unknown","timing"],"tone":"acolhedor <script>","max_length":999}\n```\nInstruções extensas que não devem entrar no prompt.'''
+    policy=compact_intake_policy([SimpleNamespace(content=content)])
+    assert policy["question_order"][:2]==["timing","symptom"]
+    assert "unknown" not in policy["question_order"]
+    assert "<" not in policy["tone"]
+    assert policy["max_length"]==400
+
+
+def test_compact_intake_policy_has_small_safe_defaults():
+    policy=compact_intake_policy([SimpleNamespace(content="# Skill sem bloco compacto")])
+    assert policy["question_order"]==["symptom","scope","timing","attempts","impact"]
+    assert policy["max_length"]==240

@@ -29,16 +29,18 @@ Entre na tela de login com esses dois valores. Em **Prestadores**, o administrad
 
 - **Adicionar Modelos:** reconhece todos os modelos reais do Ollama por `/api/tags` e conecta uma API externa compatível com Chat Completions. Existem presets para OpenAI, DeepSeek, Groq e OpenRouter, além de URL personalizada.
 - **Configurar Modelos:** seleciona separadamente o modelo de conversação e o modelo de embeddings, inclusive com origens diferentes. Também configura contexto máximo, tokens por resposta, temperatura, tempo limite entre 15 e 300 segundos e as regras que validam a saída do modelo.
-- **Skills:** importa um arquivo Markdown por link HTTPS direto, permite escolher em qual assistente ele atua, testar a instrução com o modelo de conversação e ativá-la somente depois da validação.
+- **Skills:** importa um arquivo Markdown por link HTTPS direto, permite escolher em qual assistente ele atua, testar a instrução com o modelo de conversação e ativá-la somente depois da validação. Apenas uma Skill de comportamento fica ativa por assistente; ativar outra substitui a anterior naquele escopo.
 
 Depois de salvar a configuração, use **Testar modelo**. O teste confirma que o modelo selecionado consegue cumprir o contrato de resposta antes de colocá-lo no chat. Modelos identificados pelo Ollama como exclusivos para embeddings não podem ser salvos como modelo de conversação.
 
 O portal público oferece dois caminhos:
 
 - **Assistente virtual:** consulta documentos e resoluções aprovadas. Quando não encontra base suficiente, oferece a abertura de um chamado sem inventar uma resposta.
-- **Assistente de abertura:** mantém nome e setor em campos fixos, anuncia e faz cinco perguntas úteis sem repetir assuntos. Cada pergunta cita o módulo, ação, erro ou sintoma já descrito; mensagens curtas ou ambíguas geram uma confirmação explícita, sem o modelo presumir o significado. Na primeira mensagem, verifica se existe chamado semelhante sem revelar dados de outro solicitante. Após a quinta resposta, gera um resumo editável; o usuário também pode antecipar isso com **Gerar resumo agora**.
+- **Assistente de abertura:** mantém nome e setor em campos fixos e faz até cinco perguntas úteis sem repetir assuntos. Cada pergunta considera o problema original e a última resposta; mensagens curtas ou ambíguas geram uma confirmação explícita, sem o modelo presumir o significado. Na primeira mensagem, verifica se existe chamado semelhante sem revelar dados de outro solicitante. O resumo editável é preparado após a quinta resposta ou antes, quando os assuntos necessários já estiverem esclarecidos; o usuário também pode antecipar isso com **Gerar resumo agora**.
 
-Respostas do modelo que não respeitam o contrato esperado são refeitas silenciosamente pelo tempo configurado. A integração aceita JSON puro, blocos de código JSON e, quando a regra estiver ativa, repara texto simples útil para o contrato interno. O administrador pode manter o bloqueio de perguntas repetidas, exigir os campos mínimos do resumo e optar por uma validação mais rigorosa de referência ao contexto. A falha final informa qual regra não foi satisfeita, em vez de apresentar apenas uma mensagem genérica. Durante esse período, a interface mantém o indicador de digitação. Se o limite for atingido, a própria conversa oferece **Enviar novamente**.
+Na abertura, o backend escolhe um único assunto ainda não perguntado e envia ao modelo somente as mensagens recentes confirmadas e a política compacta da Skill. Cada pergunta usa no máximo 192 tokens, contexto de até 4096 tokens e uma única tentativa de até 60 segundos. O backend remove blocos de raciocínio, extrai a primeira pergunta válida de respostas verbosas e impede repetições. Se o modelo falhar ou exceder o limite, uma pergunta contextual segura é produzida pelo próprio servidor e o usuário continua sem receber erro `504`. O resumo também possui uma versão editável de contingência.
+
+O assistente virtual continua podendo usar o conteúdo completo das Skills e da base de conhecimento. As configurações gerais de contexto, tokens e tempo permanecem como tetos para esse fluxo e para a geração do resumo.
 
 As Skills são tratadas como instruções administrativas não confiáveis: somente arquivos de texto/Markdown de até 128 KB são aceitos, redirecionamentos e destinos privados são bloqueados, o conteúdo nunca é executado e não pode substituir as regras de segurança ou permissões do sistema.
 
@@ -68,8 +70,8 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 - resoluções entram no RAG somente após confirmação do atendente.
 - documentos da base são isolados por empresa, limitados e tratados como conteúdo não confiável;
 - o contador de perguntas da abertura é assinado pelo servidor e não depende do navegador.
-- perguntas repetidas são rejeitadas no backend e refeitas silenciosamente pelo modelo;
-- perguntas vagas que não mencionam o contexto do usuário também são rejeitadas e refeitas;
+- perguntas repetidas são rejeitadas no backend e substituídas por uma pergunta de outro assunto;
+- perguntas vagas, listas e saídas inválidas são reparadas ou substituídas por fallback determinístico;
 - cada mudança de etapa, inclusive **Resolvido** e **Encerrado**, recebe data e responsável em histórico próprio.
 
 Para produção externa, coloque um proxy HTTPS na frente do `web`, remova a porta pública da API e substitua o limitador em memória por Redis.

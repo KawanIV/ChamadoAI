@@ -35,6 +35,9 @@ def test_ai_credentials_are_binary_and_runtime_schema_is_migrated():
     assert str(AIConfig.__table__.c.api_key_encrypted.type)=="BLOB"
     bootstrap=Path(__file__).resolve().parents[1].joinpath("app/bootstrap.py").read_text()
     assert "api_key_encrypted bytea" in bootstrap
+    assert "prompt_tokens integer" in bootstrap
+    assert "response_tokens integer" in bootstrap
+    assert "tokens_estimated boolean" in bootstrap
 
 @pytest.mark.asyncio
 async def test_runtime_schema_sends_json_defaults_as_raw_driver_sql():

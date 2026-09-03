@@ -1,20 +1,20 @@
-import hashlib, hmac, logging, re, time, uuid
+import asyncio, hashlib, hmac, json, logging, re, time, uuid
 import httpx
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from .config import get_settings
 from .ai_provider import credentials_key, validate_api_base_url
-from .database import get_db, set_tenant_context
-from .assistant import INTAKE_PROMPT, MAX_QUESTIONS, SUPPORT_PROMPT, chunk_document, compact_user_context, extract_document, normalize_summary, read_conversation_state, sign_conversation_state
+from .database import SessionLocal, get_db, set_tenant_context
+from .assistant import MAX_QUESTIONS, SUMMARY_PROMPT, SUPPORT_PROMPT, chunk_document, choose_intake_topic, compact_intake_request, compact_summary_evidence, compact_user_context, contextualize_question, extract_document, fallback_intake_question, fallback_ticket_summary, finalize_ticket_summary, format_numbered_question, normalize_summary, question_is_repeated, related_ticket_similarity, read_conversation_state, sign_conversation_state, summary_is_usable
 from .models import AIConfig, KnowledgeChunk, KnowledgeDocument, Resolution, Role, Skill, Tenant, Ticket, TicketStatus, TicketStatusHistory, UsageEvent, User
 from .ollama import ask_json, list_models, model_capabilities, model_supports_chat
 from .schemas import AIConfigIn, AIConnectionIn, AIRuntimeIn, LoginIn, PublicChatIn, PublicTicketIn, ResolutionIn, SkillImportIn, SkillTestIn, SkillUpdateIn, TicketStatusIn, UserCreateIn
 from .security import Principal, create_access_token, current_principal, new_public_token, require_admin, require_agent, verify_password
-from .skill_service import compiled_skills, fetch_skill
+from .skill_service import compact_intake_policy, compiled_skills, fetch_skill
 
 settings=get_settings();app=FastAPI(title="Chamados API",docs_url=None if settings.environment=="production" else "/docs")
 logger=logging.getLogger("chamados.ai")
@@ -93,14 +93,13 @@ async def retrieve_knowledge(db:AsyncSession,tenant_id:uuid.UUID,query:str)->str
     return "\n\n---\n\n".join(sources)[:12000]
 
 async def find_related_ticket(db:AsyncSession,tenant_id:uuid.UUID,query:str)->Ticket|None:
-    terms=retrieval_terms(query)
-    if not terms:return None
+    if len(query.strip())<8:return None
     rows=(await db.execute(select(Ticket).where(Ticket.tenant_id==tenant_id,Ticket.status.notin_([TicketStatus.cancelled])).order_by(Ticket.created_at.desc()).limit(80))).scalars().all()
-    query_terms=set(terms);best=None;best_score=0
+    best=None;best_score=0.0
     for ticket in rows:
-        ticket_terms=set(retrieval_terms(f"{ticket.title} {ticket.summary} {ticket.product}"));score=len(query_terms&ticket_terms)
+        score=related_ticket_similarity(query,ticket.title,ticket.summary,ticket.product)
         if score>best_score:best,best_score=ticket,score
-    return best if best_score>=2 else None
+    return best if best_score>=.72 else None
 
 async def ensure_ai_config(db:AsyncSession,tenant_id:uuid.UUID)->AIConfig:
     config=await db.get(AIConfig,tenant_id)
@@ -116,6 +115,10 @@ async def conversation_backend(db:AsyncSession,config:AIConfig)->tuple[str,str|N
 async def active_skill_prompt(db:AsyncSession,tenant_id:uuid.UUID,assistant:str)->str:
     rows=(await db.execute(select(Skill).where(Skill.tenant_id==tenant_id,Skill.active.is_(True),Skill.scope.in_(["all",assistant])).order_by(Skill.created_at))).scalars().all()
     return compiled_skills(list(rows))
+
+async def active_intake_policy(db:AsyncSession,tenant_id:uuid.UUID)->dict:
+    rows=(await db.execute(select(Skill).where(Skill.tenant_id==tenant_id,Skill.active.is_(True),Skill.scope.in_(["all","intake"])).order_by(Skill.created_at.desc()))).scalars().all()
+    return compact_intake_policy(list(rows))
 
 async def external_model_catalog(db:AsyncSession,config:AIConfig)->list[dict]:
     if config.provider=="ollama" or not config.api_base_url:return []
@@ -133,14 +136,15 @@ async def tracked_ask(db:AsyncSession,tenant_id:uuid.UUID,model:str,*args,**kwar
         result=await ask_json(model,*args,**kwargs);success=True
     except Exception as exc:
         success=False;result=None;failure=exc
-    duration=int((time.monotonic()-started)*1000)
+    duration=int((time.monotonic()-started)*1000);provider_usage=result.pop("_provider_usage",{}) if success and isinstance(result,dict) else {}
     db.add(UsageEvent(tenant_id=tenant_id,event_type="assistant_request",model=model,success=success,duration_ms=duration))
-    db.add(UsageEvent(tenant_id=tenant_id,event_type="llm_request",model=model,success=success,duration_ms=duration))
+    db.add(UsageEvent(tenant_id=tenant_id,event_type="llm_request",model=model,success=success,duration_ms=duration,prompt_tokens=provider_usage.get("prompt_tokens"),response_tokens=provider_usage.get("response_tokens"),tokens_estimated=bool(provider_usage.get("tokens_estimated",False))))
     await db.commit()
     if not success:
         logger.warning("llm_request_failed model=%s duration_ms=%s reason=%s",model,duration,str(failure)[:500])
         if isinstance(failure,HTTPException):raise failure
         raise HTTPException(504,"O modelo demorou mais que o esperado para gerar uma resposta válida")
+    result["_metrics"]={"duration_ms":duration,"response_tokens":provider_usage.get("response_tokens",0),"prompt_tokens":provider_usage.get("prompt_tokens"),"tokens_estimated":bool(provider_usage.get("tokens_estimated",False)),"attempts":provider_usage.get("attempts",1)}
     return result
 
 async def decrypt_api_key(db:AsyncSession,config:AIConfig)->str|None:
@@ -149,8 +153,7 @@ async def decrypt_api_key(db:AsyncSession,config:AIConfig)->str|None:
     except Exception:
         await db.rollback();raise HTTPException(503,"Não foi possível acessar a credencial do provedor. Verifique AI_CREDENTIALS_KEY")
 
-@app.post("/api/public/{slug}/chat",dependencies=[Depends(public_limit)])
-async def public_chat(slug:str,data:PublicChatIn,db:AsyncSession=Depends(get_db)):
+async def handle_public_chat(slug:str,data:PublicChatIn,db:AsyncSession,progress_callback=None):
     verify_context(slug,data.public_context);tenant=(await db.execute(select(Tenant).where(Tenant.public_slug==slug,Tenant.active.is_(True)))).scalar_one_or_none()
     if not tenant:raise HTTPException(404,"Portal não encontrado")
     await set_tenant_context(db,str(tenant.id));config=await db.get(AIConfig,tenant.id);model=config.model if config else settings.default_model
@@ -161,36 +164,86 @@ async def public_chat(slug:str,data:PublicChatIn,db:AsyncSession=Depends(get_db)
         role=message.get("role");content=message.get("content","")
         if role not in {"user","assistant"} or not isinstance(content,str):raise HTTPException(422,"Conversa inválida")
         clean.append({"role":role,"content":content[:5000]})
-    context_size=config.context_size if config else 8192;max_tokens=config.max_tokens if config else 512;temperature=float(config.temperature) if config else .2;timeout_seconds=getattr(config,"response_timeout_seconds",90) if config else 90;rules=getattr(config,"valid_response_rules",None) or DEFAULT_RESPONSE_RULES;skill_prompt=await active_skill_prompt(db,tenant.id,data.assistant)
+    context_size=config.context_size if config else 8192;max_tokens=config.max_tokens if config else 512;temperature=float(config.temperature) if config else .2;timeout_seconds=getattr(config,"response_timeout_seconds",90) if config else 90;rules=getattr(config,"valid_response_rules",None) or DEFAULT_RESPONSE_RULES
     if data.assistant=="support":
+        skill_prompt=await active_skill_prompt(db,tenant.id,"support")
         query=next((m["content"] for m in reversed(clean) if m["role"]=="user"),"");sources=await retrieve_knowledge(db,tenant.id,query)
         if not sources:
-            db.add(UsageEvent(tenant_id=tenant.id,event_type="assistant_request",model=model,success=True,duration_ms=0));await db.commit();return {"message":"Ainda não encontrei conteúdo aprovado na base de conhecimento para orientar essa demanda com segurança. Posso encaminhar a conversa para a abertura de um chamado.","model":model,"phase":"offer_ticket","question_count":0,"conversation_state":None}
-        safe_sources=sources.replace("<fontes>","[marcador removido]").replace("</fontes>","[marcador removido]");payload=await tracked_ask(db,tenant.id,model,f"{SUPPORT_PROMPT}{skill_prompt}\n<fontes>\n{safe_sources}\n</fontes>",clean,context_size,max_tokens,temperature,"support",provider=provider,api_base_url=api_base_url,api_key=api_key,timeout_seconds=timeout_seconds,rules=rules);action=payload.get("action")
+            db.add(UsageEvent(tenant_id=tenant.id,event_type="assistant_request",model=model,success=True,duration_ms=0));await db.commit();return {"message":"Ainda não encontrei conteúdo aprovado na base de conhecimento para orientar essa demanda com segurança. Posso encaminhar a conversa para a abertura de um chamado.","model":model,"phase":"offer_ticket","question_count":0,"conversation_state":None,"duration_ms":0,"response_tokens":0,"tokens_estimated":False}
+        safe_sources=sources.replace("<fontes>","[marcador removido]").replace("</fontes>","[marcador removido]");payload=await tracked_ask(db,tenant.id,model,f"{SUPPORT_PROMPT}{skill_prompt}\n<fontes>\n{safe_sources}\n</fontes>",clean,context_size,max_tokens,temperature,"support",provider=provider,api_base_url=api_base_url,api_key=api_key,timeout_seconds=timeout_seconds,rules=rules,progress_callback=progress_callback);action=payload.get("action")
         phase="offer_ticket" if action=="offer_ticket" else "answer";message=str(payload.get("message","")).strip()[:5000]
         if not message:raise HTTPException(502,"O modelo retornou uma resposta vazia")
-        return {"message":message,"model":model,"phase":phase,"question_count":0,"conversation_state":None}
+        metrics=payload.pop("_metrics",{})
+        return {"message":message,"model":model,"phase":phase,"question_count":0,"conversation_state":None,**metrics}
     count=read_conversation_state(data.conversation_state,slug,"intake");must_summarize=data.action=="summarize" or count>=MAX_QUESTIONS
     if count==0 and data.action=="message":
         first_query=next((m["content"] for m in reversed(clean) if m["role"]=="user"),"");related=await find_related_ticket(db,tenant.id,first_query)
         if related:
             subject=compact_user_context(first_query)
-            message=f"Você descreveu: \"{subject}\". Encontrei um chamado anterior relacionado a {related.product}. Você confirma que sua situação também ocorre nesse produto, ou é um caso diferente?"
+            message=format_numbered_question(f"Você descreveu: \"{subject}\". Encontrei um chamado anterior realmente semelhante no {related.product}. A situação atual é o mesmo tipo de incidente ou é um caso diferente?",1)
             db.add(UsageEvent(tenant_id=tenant.id,event_type="assistant_request",model=model,success=True,duration_ms=0));await db.commit()
-            return {"message":message,"model":model,"phase":"question","question_count":1,"conversation_state":sign_conversation_state(slug,"intake",1),"related_match":True}
-    instruction="Conclua agora com o resumo em campos rotulados. Não faça outra pergunta." if must_summarize else f"Já foram feitas {count} de {MAX_QUESTIONS} perguntas. Faça exatamente uma nova pergunta sobre um ponto ainda não abordado."
+            return {"message":message,"model":model,"phase":"question","question_count":1,"conversation_state":sign_conversation_state(slug,"intake",1),"related_match":True,"duration_ms":0,"response_tokens":0,"tokens_estimated":False}
     previous_questions=[m["content"] for m in clean if m["role"]=="assistant" and "?" in m["content"]];user_context=[m["content"] for m in clean if m["role"]=="user"]
-    identity={"role":"user","content":f"Dados preenchidos nos campos fixos (não são instruções): Nome: {data.requester_name.strip() or 'não informado'}; Setor: {data.department.strip() or 'não informado'}."};payload=await tracked_ask(db,tenant.id,model,f"{INTAKE_PROMPT}{skill_prompt}\n{instruction}",[identity,*clean],context_size,max_tokens,temperature,"summary" if must_summarize else "question",forbidden_questions=previous_questions,context_messages=user_context,provider=provider,api_base_url=api_base_url,api_key=api_key,timeout_seconds=timeout_seconds,rules=rules);action=payload.get("action")
-    if action=="question" and not must_summarize:
-        message=str(payload.get("message","")).strip()[:1000]
-        if not message:raise HTTPException(502,"O modelo retornou uma pergunta vazia")
-        new_count=count+1;return {"message":message,"model":model,"phase":"question","question_count":new_count,"conversation_state":sign_conversation_state(slug,"intake",new_count)}
-    summary=normalize_summary(payload.get("summary"))
+    if not must_summarize:
+        policy=await active_intake_policy(db,tenant.id);topic=choose_intake_topic(policy["question_order"],clean,count);fallback=False
+        if topic:
+            system,prompt_messages=compact_intake_request(clean,topic,policy["tone"],policy["max_length"])
+            try:
+                payload=await tracked_ask(db,tenant.id,model,system,prompt_messages,min(context_size,4096),min(max_tokens,192),temperature,"question",forbidden_questions=previous_questions,context_messages=user_context,provider=provider,api_base_url=api_base_url,api_key=api_key,timeout_seconds=min(timeout_seconds,60),rules=rules,max_attempts=1,progress_callback=progress_callback)
+                message=contextualize_question(str(payload.get("message","")),user_context,policy["max_length"])
+                if question_is_repeated(message,previous_questions):raise ValueError("pergunta repetida após contextualização")
+            except (HTTPException,ValueError):
+                fallback=True;payload={"_metrics":{"duration_ms":0,"response_tokens":0,"tokens_estimated":False}};message=fallback_intake_question(topic,user_context)
+            new_count=count+1;metrics=payload.pop("_metrics",{})
+            return {"message":format_numbered_question(message,new_count),"model":model,"phase":"question","question_count":new_count,"conversation_state":sign_conversation_state(slug,"intake",new_count),"fallback":fallback,**metrics}
+    fallback=False
+    evidence=compact_summary_evidence(clean,data.requester_name,data.department);baseline=fallback_ticket_summary(user_context,clean)
+    summary_messages=[{"role":"user","content":f"FATOS CONFIRMADOS:\n{evidence}\n\nRASCUNHO TÉCNICO SEGURO:\nTítulo: {baseline['title']}\nDescrição: {baseline['description']}\nProduto: {baseline['product']}\nPrioridade: {baseline['priority']}\nContato:"}]
+    try:
+        payload=await tracked_ask(db,tenant.id,model,SUMMARY_PROMPT,summary_messages,min(context_size,4096),min(max_tokens,384),temperature,"summary",context_messages=user_context,provider=provider,api_base_url=api_base_url,api_key=api_key,timeout_seconds=timeout_seconds,rules=rules,max_attempts=1,progress_callback=progress_callback)
+        candidate=normalize_summary(payload.get("summary"))
+        if not summary_is_usable(candidate,user_context):raise ValueError("o resumo não sintetizou os fatos confirmados")
+        payload["summary"]=finalize_ticket_summary(candidate,baseline,user_context)
+    except HTTPException:
+        fallback=True;payload={"action":"summary","message":"Revise o resumo antes de enviar.","summary":baseline,"_metrics":{"duration_ms":0,"response_tokens":0,"tokens_estimated":False}}
+    except ValueError:
+        fallback=True;payload={"action":"summary","message":"Revise o resumo antes de enviar.","summary":baseline,"_metrics":payload.get("_metrics",{})}
+    summary=finalize_ticket_summary(payload.get("summary"),baseline,user_context);metrics=payload.pop("_metrics",{})
     if data.requester_name.strip():summary["requester_name"]=data.requester_name.strip()
     if data.department.strip():summary["department"]=data.department.strip()
     if not summary["description"]:summary["description"]="\n".join(m["content"] for m in clean if m["role"]=="user")[:5000]
     if not summary["title"]:summary["title"]=summary["description"][:120]
-    return {"message":str(payload.get("message","Revise o resumo antes de enviar."))[:1000],"model":model,"phase":"summary","question_count":count,"conversation_state":sign_conversation_state(slug,"intake",count),"summary":summary}
+    return {"message":str(payload.get("message","Revise o resumo antes de enviar."))[:1000],"model":model,"phase":"summary","question_count":count,"conversation_state":sign_conversation_state(slug,"intake",count),"summary":summary,"fallback":fallback,**metrics}
+
+@app.post("/api/public/{slug}/chat",dependencies=[Depends(public_limit)])
+async def public_chat(slug:str,data:PublicChatIn,db:AsyncSession=Depends(get_db)):
+    return await handle_public_chat(slug,data,db)
+
+@app.post("/api/public/{slug}/chat/stream",dependencies=[Depends(public_limit)])
+async def public_chat_stream(slug:str,data:PublicChatIn):
+    queue:asyncio.Queue[dict]=asyncio.Queue()
+    async def report_progress(progress:dict)->None:await queue.put({"type":"progress",**progress})
+    async def events():
+        async def execute():
+            async with SessionLocal() as db:return await handle_public_chat(slug,data,db,report_progress)
+        task=asyncio.create_task(execute())
+        yield json.dumps({"type":"progress","response_tokens":0,"tokens_estimated":True},ensure_ascii=False)+"\n"
+        try:
+            while not task.done() or not queue.empty():
+                try:event=await asyncio.wait_for(queue.get(),timeout=.25)
+                except TimeoutError:continue
+                yield json.dumps(event,ensure_ascii=False)+"\n"
+            result=await task
+            yield json.dumps({"type":"result","data":result},ensure_ascii=False)+"\n"
+        except HTTPException as exc:
+            yield json.dumps({"type":"error","detail":exc.detail,"status":exc.status_code},ensure_ascii=False)+"\n"
+        except Exception:
+            logger.exception("public_chat_stream_failed")
+            yield json.dumps({"type":"error","detail":"Não foi possível concluir a resposta do assistente","status":500},ensure_ascii=False)+"\n"
+        finally:
+            if not task.done():task.cancel()
+    return StreamingResponse(events(),media_type="application/x-ndjson",headers={"Cache-Control":"no-store","X-Accel-Buffering":"no"})
+
 def serialize_resolution(item:Resolution|None)->dict|None:
     if not item:return None
     return {"id":str(item.id),"confirmed_problem":item.confirmed_problem,"root_cause":item.root_cause,"solution":item.solution,"validation":item.validation,"reusable":item.reusable}
@@ -234,7 +287,7 @@ async def admin_metrics(days:int=Query(default=30,ge=1,le=90),p:Principal=Depend
     tickets_created=await db.scalar(select(func.count()).select_from(Ticket).where(Ticket.tenant_id==tenant_id,Ticket.created_at>=since)) or 0
     documents=await db.scalar(select(func.count()).select_from(KnowledgeDocument).where(KnowledgeDocument.tenant_id==tenant_id,KnowledgeDocument.created_at>=since)) or 0
     stage_rows=(await db.execute(select(TicketStatusHistory.status,TicketStatusHistory.entered_at).where(TicketStatusHistory.tenant_id==tenant_id,TicketStatusHistory.entered_at>=since))).all()
-    event_rows=(await db.execute(select(UsageEvent.event_type,UsageEvent.success,UsageEvent.duration_ms,UsageEvent.created_at).where(UsageEvent.tenant_id==tenant_id,UsageEvent.created_at>=since))).all()
+    event_rows=(await db.execute(select(UsageEvent.event_type,UsageEvent.success,UsageEvent.duration_ms,UsageEvent.response_tokens,UsageEvent.created_at).where(UsageEvent.tenant_id==tenant_id,UsageEvent.created_at>=since))).all()
     llm=[row for row in event_rows if row.event_type=="llm_request"];assistant=[row for row in event_rows if row.event_type=="assistant_request"]
     daily={}
     for offset in range(days):
@@ -247,7 +300,7 @@ async def admin_metrics(days:int=Query(default=30,ge=1,le=90),p:Principal=Depend
         key=created_at.date().isoformat()
         if key in daily:daily[key]["tickets"]+=1
     durations=[row.duration_ms for row in llm if row.duration_ms is not None]
-    return {"period_days":days,"active_providers":providers,"conversations":len(assistant),"tickets_created":tickets_created,"tickets_resolved":sum(1 for status,_ in stage_rows if status==TicketStatus.resolved),"tickets_closed":sum(1 for status,_ in stage_rows if status==TicketStatus.closed),"documents_indexed":documents,"llm_requests":len(llm),"llm_failures":sum(1 for row in llm if not row.success),"average_llm_latency_ms":round(sum(durations)/len(durations)) if durations else 0,"daily":list(daily.values())}
+    return {"period_days":days,"active_providers":providers,"conversations":len(assistant),"tickets_created":tickets_created,"tickets_resolved":sum(1 for status,_ in stage_rows if status==TicketStatus.resolved),"tickets_closed":sum(1 for status,_ in stage_rows if status==TicketStatus.closed),"documents_indexed":documents,"llm_requests":len(llm),"llm_failures":sum(1 for row in llm if not row.success),"llm_response_tokens":sum(row.response_tokens or 0 for row in llm),"average_llm_latency_ms":round(sum(durations)/len(durations)) if durations else 0,"daily":list(daily.values())}
 @app.get("/api/admin/ai/models")
 async def models(_:Principal=Depends(require_admin)):
     try:return {"models":await list_models()}
@@ -370,6 +423,10 @@ async def import_skill(data:SkillImportIn,p:Principal=Depends(require_admin),db:
 async def update_skill(skill_id:uuid.UUID,data:SkillUpdateIn,p:Principal=Depends(require_admin),db:AsyncSession=Depends(get_db)):
     tenant_id=uuid.UUID(p.tenant_id);await set_tenant_context(db,p.tenant_id);item=(await db.execute(select(Skill).where(Skill.id==skill_id,Skill.tenant_id==tenant_id))).scalar_one_or_none()
     if not item:raise HTTPException(404,"Skill não encontrada")
+    if data.active:
+        conflicting=["all","intake","support"] if data.scope=="all" else ["all",data.scope]
+        rows=(await db.execute(select(Skill).where(Skill.tenant_id==tenant_id,Skill.id!=item.id,Skill.active.is_(True),Skill.scope.in_(conflicting)))).scalars().all()
+        for other in rows:other.active=False
     item.active=data.active;item.scope=data.scope;await db.commit();return serialize_skill(item)
 
 @app.post("/api/admin/ai/skills/{skill_id}/test")

@@ -37,6 +37,6 @@ class SkillTestIn(BaseModel):
 class UserCreateIn(BaseModel):
     name:str=Field(min_length=2,max_length=120);email:str=Field(max_length=254);password:str=Field(min_length=12,max_length=128);role:Literal["agent"]="agent"
 class PublicChatIn(BaseModel):
-    public_context:str;assistant:Literal["intake","support"]="intake";action:Literal["message","summarize"]="message";conversation_state:str|None=None;requester_name:str=Field(default="",max_length=120);department:str=Field(default="",max_length=120);messages:list[dict[str,str]]=Field(min_length=1,max_length=16)
+    public_context:str;assistant:Literal["intake","support"]="intake";action:Literal["message","summarize"]="message";conversation_state:str|None=None;requester_name:str=Field(default="",max_length=120);department:str=Field(default="",max_length=120);messages:list[dict[str,object]]=Field(min_length=1,max_length=16)
 class TicketStatusIn(BaseModel):
     status:Literal["new","analysis","working","waiting","validation","resolved","closed","cancelled"]

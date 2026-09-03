@@ -29,6 +29,10 @@ def question_shape_error(message:str)->str|None:
     normalized="".join(character for character in unicodedata.normalize("NFKD",value.lower()) if not unicodedata.combining(character))
     identity_patterns=(r"\bquem e o usuario\b",r"\bqual (?:e )?o seu nome\b",r"\binforme (?:o )?seu nome\b",r"\bqual (?:e )?o seu setor\b",r"\binforme (?:o )?seu setor\b",r"\bnome e setor\b")
     if any(re.search(pattern,normalized) for pattern in identity_patterns):return "nome e setor já são coletados nos campos fixos"
+    sensitive_patterns=(r"\bqual (?:e )?a sua senha\b",r"\binforme (?:a )?senha\b",r"\benvie (?:o )?token\b",r"\bcodigo de autenticacao\b",r"\bchave de api\b")
+    if any(re.search(pattern,normalized) for pattern in sensitive_patterns):return "a pergunta solicita informação sensível"
+    advice_patterns=(r"\btente (?:reiniciar|limpar|reinstalar|alterar|trocar)\b",r"\breinicie\b",r"\blimpe (?:o )?cache\b",r"\bredefina (?:a )?senha\b",r"\bprovavelmente (?:e|a causa)\b")
+    if any(re.search(pattern,normalized) for pattern in advice_patterns):return "a triagem não deve diagnosticar nem sugerir solução"
     return None
 
 def contract_error(payload:object,contract:str,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,rules:dict|None=None)->str|None:
@@ -40,7 +44,9 @@ def contract_error(payload:object,contract:str,forbidden_questions:list[str]|Non
     if contract=="summary":
         summary=payload.get("summary")
         if action!="summary" or not isinstance(summary,dict):return "resumo fora do contrato"
-        if applied["require_summary_fields"] and not str(summary.get("description","")).strip():return "resumo sem descrição"
+        if applied["require_summary_fields"]:
+            missing=[field for field in ("title","description","product","priority") if not str(summary.get(field,"")).strip()]
+            if missing:return "resumo sem os campos obrigatórios: "+", ".join(missing)
         return None
     if contract in {"question","intake"}:
         if action=="summary" and contract=="intake" and isinstance(payload.get("summary"),dict):return None
@@ -126,6 +132,87 @@ def parse_model_response(content:object,contract:str,allow_plain_text:bool=True)
             return {"action":action,"message":value}
         raise
 
+def first_valid_question(value:object,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,rules:dict|None=None)->str|None:
+    """Salvage one usable question from verbose output produced by small models."""
+    try:visible=visible_model_content(value)
+    except ValueError:return None
+    applied={**DEFAULT_RULES,**(rules or {})}
+    for match in re.finditer(r"(?:^|[\n.!])\s*(?:[-*•]|\d+[.)])?\s*([^?\n]{3,500}\?)",visible):
+        candidate=re.sub(r"\s+"," ",match.group(1)).strip()
+        payload={"action":"question","message":candidate}
+        if contract_error(payload,"question",forbidden_questions,context_messages,applied) is None:return candidate
+    return None
+
+def repair_question_payload(payload:object,raw_content:object,forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,rules:dict|None=None)->object:
+    if isinstance(payload,dict) and contract_error(payload,"question",forbidden_questions,context_messages,rules) is None:return payload
+    candidate=first_valid_question(raw_content,forbidden_questions,context_messages,rules)
+    return {"action":"question","message":candidate} if candidate else payload
+
+def response_usage(body:dict,content:object,external:bool)->dict:
+    usage=body.get("usage",{}) if external else body
+    response_tokens=usage.get("completion_tokens") if external else usage.get("eval_count")
+    prompt_tokens=usage.get("prompt_tokens") if external else usage.get("prompt_eval_count")
+    estimated=False
+    if not isinstance(response_tokens,int):
+        visible=visible_model_content(content)
+        response_tokens=max(1,round(len(visible)/4)) if visible else 0
+        estimated=True
+    return {"response_tokens":response_tokens,"prompt_tokens":prompt_tokens if isinstance(prompt_tokens,int) else None,"tokens_estimated":estimated}
+
+def _stream_piece(value:object)->str:
+    if isinstance(value,str):return value
+    if isinstance(value,list):
+        return "".join(str(item.get("text",item.get("content",""))) for item in value if isinstance(item,dict) and str(item.get("type","text")).lower() not in {"reasoning","thinking","analysis"})
+    return ""
+
+async def _notify_progress(callback,generated_text:str,exact_tokens:int|None=None)->None:
+    if callback is None:return
+    estimated=not isinstance(exact_tokens,int)
+    tokens=exact_tokens if not estimated else (max(1,round(len(generated_text)/4)) if generated_text else 0)
+    await callback({"response_tokens":tokens,"tokens_estimated":estimated})
+
+def _check_stream_status(response)->None:
+    if 400<=response.status_code<500 and response.status_code not in {408,429}:raise HTTPException(502,"O provedor de IA recusou a requisição")
+    if response.status_code>=500 or response.status_code in {408,429}:raise httpx.HTTPStatusError("Falha temporária",request=response.request,response=response)
+
+async def _stream_ollama(client:httpx.AsyncClient,url:str,request_body:dict,request_timeout:float,progress_callback)->tuple[dict,str]:
+    content_parts=[];generated_parts=[];final_body={}
+    async with client.stream("POST",url,timeout=request_timeout,json={**request_body,"stream":True}) as response:
+        _check_stream_status(response)
+        async for line in response.aiter_lines():
+            if not line.strip():continue
+            chunk=json.loads(line);final_body.update(chunk)
+            message=chunk.get("message",{}) if isinstance(chunk,dict) else {}
+            piece=_stream_piece(message.get("content",""));thinking=_stream_piece(message.get("thinking",""))
+            if piece:content_parts.append(piece)
+            if piece or thinking:generated_parts.extend([thinking,piece])
+            await _notify_progress(progress_callback,"".join(generated_parts),chunk.get("eval_count"))
+    return final_body,"".join(content_parts)
+
+async def _stream_external(client:httpx.AsyncClient,url:str,headers:dict,variants:list[dict],request_timeout:float,progress_callback)->tuple[dict,str]:
+    for variant in variants:
+        content_parts=[];generated_parts=[];usage={}
+        async with client.stream("POST",url,timeout=request_timeout,headers=headers,json={**variant,"stream":True}) as response:
+            if response.status_code==400:
+                await response.aread();continue
+            _check_stream_status(response)
+            async for line in response.aiter_lines():
+                value=line.strip()
+                if not value:continue
+                if value.startswith("data:"):value=value[5:].strip()
+                if value=="[DONE]":break
+                chunk=json.loads(value)
+                if isinstance(chunk.get("usage"),dict):usage=chunk["usage"]
+                choice=(chunk.get("choices") or [{}])[0]
+                message=choice.get("delta") or choice.get("message") or {}
+                piece=_stream_piece(message.get("content",""));thinking=_stream_piece(message.get("reasoning_content",message.get("reasoning","")))
+                if piece:content_parts.append(piece)
+                if piece or thinking:generated_parts.extend([thinking,piece])
+                exact=usage.get("completion_tokens") if isinstance(usage.get("completion_tokens"),int) else None
+                await _notify_progress(progress_callback,"".join(generated_parts),exact)
+        return {"usage":usage},"".join(content_parts)
+    raise HTTPException(502,"O provedor de IA recusou a requisição")
+
 def _external_variants(model:str,prompt:list[dict],max_tokens:int,temperature:float,provider:str)->list[dict]:
     token_keys=["max_completion_tokens","max_tokens"] if provider=="openai" else ["max_tokens","max_completion_tokens"]
     variants=[]
@@ -135,7 +222,7 @@ def _external_variants(model:str,prompt:list[dict],max_tokens:int,temperature:fl
         variants.append({key:value for key,value in base.items() if key!="temperature"})
     return variants
 
-async def ask_json(model:str,system:str,messages:list[dict],context_size:int=8192,max_tokens:int=512,temperature:float=.2,contract:str="intake",forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,provider:str="ollama",api_base_url:str|None=None,api_key:str|None=None,timeout_seconds:int=90,rules:dict|None=None)->dict:
+async def ask_json(model:str,system:str,messages:list[dict],context_size:int=8192,max_tokens:int=512,temperature:float=.2,contract:str="intake",forbidden_questions:list[str]|None=None,context_messages:list[str]|None=None,provider:str="ollama",api_base_url:str|None=None,api_key:str|None=None,timeout_seconds:int=90,rules:dict|None=None,max_attempts:int|None=None,progress_callback=None)->dict:
     safe=[{"role":m["role"],"content":m["content"][:5000]} for m in messages[-16:]]
     external=provider!="ollama";base_url=None
     if external:
@@ -144,7 +231,7 @@ async def ask_json(model:str,system:str,messages:list[dict],context_size:int=819
     applied={**DEFAULT_RULES,**(rules or {})};deadline=time.monotonic()+max(15,min(timeout_seconds,300));attempt=0;last_reason="tempo de resposta excedido"
     async with httpx.AsyncClient() as client:
         while time.monotonic()<deadline:
-            attempt+=1;remaining=max(1,deadline-time.monotonic());request_timeout=min(remaining,max(15,min(120,timeout_seconds*.7)))
+            attempt+=1;remaining=max(1,deadline-time.monotonic());request_timeout=min(remaining,max(15,min(120,timeout_seconds if max_attempts==1 else timeout_seconds*.7)))
             if attempt==1:correction=""
             elif contract in {"question","intake"}:correction=f"\nA resposta anterior foi rejeitada por: {last_reason}. Entregue somente a pergunta final em texto simples. Faça exatamente uma pergunta curta e autocontida sobre o problema concreto descrito pelo usuário, sem listas, sem repetir assuntos e sem perguntar nome ou setor."
             elif contract=="summary":correction=f"\nA resposta anterior foi rejeitada por: {last_reason}. Entregue o resumo final em texto simples, usando uma linha para cada campo: Título, Descrição, Produto, Prioridade e Contato."
@@ -152,24 +239,32 @@ async def ask_json(model:str,system:str,messages:list[dict],context_size:int=819
             try:
                 prompt=[{"role":"system","content":system+correction},*safe]
                 if external:
-                    response=None
-                    for request_body in _external_variants(model,prompt,max_tokens,temperature,provider):
-                        response=await client.post(f"{base_url}/chat/completions",timeout=request_timeout,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"},json=request_body)
-                        if response.status_code!=400:break
-                    if response is None:raise ValueError("Sem resposta do provedor")
+                    variants=_external_variants(model,prompt,max_tokens,temperature,provider);headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"};url=f"{base_url}/chat/completions"
+                    if progress_callback is not None:body,content=await _stream_external(client,url,headers,variants,request_timeout,progress_callback)
+                    else:
+                        response=None
+                        for request_body in variants:
+                            response=await client.post(url,timeout=request_timeout,headers=headers,json=request_body)
+                            if response.status_code!=400:break
+                        if response is None:raise ValueError("Sem resposta do provedor")
+                        _check_stream_status(response);body=response.json();content=body.get("choices",[{}])[0].get("message",{}).get("content","")
                 else:
                     request_body={"model":model,"stream":False,"messages":prompt,"options":{"temperature":temperature,"num_ctx":context_size,"num_predict":max_tokens}}
-                    response=await client.post(f"{get_settings().ollama_url}/api/chat",timeout=request_timeout,json=request_body)
-                if 400<=response.status_code<500 and response.status_code not in {408,429}:raise HTTPException(502,"O provedor de IA recusou a requisição")
-                if response.status_code>=500 or response.status_code in {408,429}:raise httpx.HTTPStatusError("Falha temporária",request=response.request,response=response)
-                body=response.json();content=body.get("choices",[{}])[0].get("message",{}).get("content","") if external else body.get("message",{}).get("content","")
+                    url=f"{get_settings().ollama_url}/api/chat"
+                    if progress_callback is not None:body,content=await _stream_ollama(client,url,request_body,request_timeout,progress_callback)
+                    else:
+                        response=await client.post(url,timeout=request_timeout,json=request_body);_check_stream_status(response);body=response.json();content=body.get("message",{}).get("content","")
                 payload=parse_model_response(content,contract,applied["allow_plain_text_repair"])
+                if contract in {"question","intake"}:payload=repair_question_payload(payload,content,forbidden_questions,context_messages,applied)
                 last_reason=contract_error(payload,contract,forbidden_questions,context_messages,applied) or ""
-                if not last_reason:return payload
+                if not last_reason:
+                    payload["_provider_usage"]={**response_usage(body,content,external),"attempts":attempt}
+                    return payload
             except HTTPException:raise
             except httpx.TimeoutException:last_reason="tempo de geração excedido"
             except httpx.HTTPError:last_reason="falha temporária de comunicação com o provedor"
             except (ValueError,json.JSONDecodeError):last_reason="formato JSON inválido"
             except (AttributeError,KeyError,TypeError):last_reason="resposta incompleta do provedor"
+            if max_attempts is not None and attempt>=max_attempts:break
             if time.monotonic()<deadline:await asyncio.sleep(min(1.5*attempt,5))
     raise HTTPException(504,f"O modelo não entregou uma resposta válida dentro do limite: {last_reason}")
