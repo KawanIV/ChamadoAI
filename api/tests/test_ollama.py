@@ -12,7 +12,7 @@ async def test_models_endpoint_returns_entire_ollama_catalog(monkeypatch):
     catalog=[{"name":"ternary-bonsai:8b","size":10},{"name":"rwkv7:7b","size":20},{"name":"nomic-embed-text:latest","size":30}]
     async def fake_models():return catalog
     monkeypatch.setattr(main,"list_models",fake_models)
-    result=await main.models(Principal(user_id="u",tenant_id="t",role="admin"))
+    result=await main.models(Principal(user_id="u",tenant_id="t",role="platform_admin"))
     assert result["models"]==catalog
 
 def test_json_contract_rejects_wrong_shapes():
@@ -77,7 +77,7 @@ def test_provider_usage_prefers_exact_token_counts_and_marks_estimates():
     assert estimated["tokens_estimated"] is True
 
 def test_chat_schema_tolerates_display_metrics_from_cached_clients():
-    payload=PublicChatIn(public_context="contexto",messages=[{"role":"assistant","content":"Pergunta 1: Qual erro aparece?","duration_ms":1200,"response_tokens":8,"tokens_estimated":False}])
+    payload=PublicChatIn(area_id=uuid.uuid4(),public_context="contexto",messages=[{"role":"assistant","content":"Pergunta 1: Qual erro aparece?","duration_ms":1200,"response_tokens":8,"tokens_estimated":False}])
     assert payload.messages[0]["content"].startswith("Pergunta 1")
 
 @pytest.mark.asyncio

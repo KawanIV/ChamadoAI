@@ -4,6 +4,8 @@ import {
   Activity,
   BookOpen,
   Bot,
+  Building2,
+  Camera,
   CheckCircle2,
   ChevronDown,
   Clock3,
@@ -12,6 +14,7 @@ import {
   FileText,
   Inbox,
   LayoutDashboard,
+  Layers3,
   List,
   LogOut,
   MoreHorizontal,
@@ -25,6 +28,7 @@ import {
   TicketCheck,
   Upload,
   Users,
+  UserCircle,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -40,12 +44,21 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+
+type Area = { id: string; name: string; active: boolean; created_at?: string };
+type Company = { id: string; name: string; public_slug: string; active: boolean; managers: number; areas: number; public_path: string };
 
 type User = {
   id: string;
   name: string;
   email: string;
-  role: "admin" | "agent";
+  role: "platform_admin" | "company_admin" | "agent";
+  tenant?: { id: string; name: string; slug: string } | null;
+  area?: { id: string; name: string } | null;
+  area_id?: string;
+  area_name?: string;
+  avatar_url?: string | null;
 };
 type StatusHistory = {
   status: string;
@@ -62,6 +75,8 @@ type TicketResolution = {
 };
 type Ticket = {
   id: string;
+  area_id: string;
+  area_name: string | null;
   protocol: number;
   requester_name: string;
   department: string;
@@ -115,6 +130,8 @@ type ChatReply = {
 };
 type KnowledgeDocument = {
   id: string;
+  area_id: string;
+  area_name: string;
   kind: "document" | "resolution";
   title: string;
   filename: string;
@@ -134,6 +151,7 @@ type ChatProgress = {
 };
 type AdminMetrics = {
   period_days: number;
+  companies: number;
   active_providers: number;
   conversations: number;
   tickets_created: number;
@@ -180,7 +198,9 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 async function streamChat(
+  slug: string,
   request: PendingChatRequest & {
+    area_id: string;
     public_context: string;
     requester_name: string;
     department: string;
@@ -188,7 +208,7 @@ async function streamChat(
   onProgress: (progress: ChatProgress) => void,
 ): Promise<ChatReply> {
   const response = await fetch(
-    "/backend/api/public/zoho-suporte/chat/stream",
+    `/backend/api/public/${encodeURIComponent(slug)}/chat/stream`,
     {
       method: "POST",
       credentials: "same-origin",
@@ -251,9 +271,9 @@ async function streamChat(
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [publicMode, setPublicMode] = useState(false);
+  const [publicSlug, setPublicSlug] = useState<string | null>(null);
   useEffect(() => {
-    const sync = () => setPublicMode(location.hash === "#/abrir");
+    const sync = () => { const match=location.hash.match(/^#\/abrir\/([a-z0-9-]+)$/);setPublicSlug(match?.[1] || null); };
     sync();
     addEventListener("hashchange", sync);
     api<User>("/api/auth/me")
@@ -263,17 +283,18 @@ export default function Home() {
     return () => removeEventListener("hashchange", sync);
   }, []);
   if (loading) return <Loading />;
-  if (publicMode)
+  if (publicSlug)
     return (
       <PublicPortal
+        slug={publicSlug}
         onBack={() => {
           location.hash = "";
-          setPublicMode(false);
+          setPublicSlug(null);
         }}
       />
     );
   if (!user) return <Login onLogin={setUser} />;
-  return <Authenticated user={user} onLogout={() => setUser(null)} />;
+  return <Authenticated user={user} onUserChange={setUser} onLogout={() => setUser(null)} />;
 }
 function Loading() {
   return (
@@ -297,6 +318,7 @@ function Brand() {
   );
 }
 function Login({ onLogin }: { onLogin: (u: User) => void }) {
+  const [tenantSlug, setTenantSlug] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -309,7 +331,7 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
     try {
       const result = await api<{ user: User }>("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify({ tenant_slug: "zoho-suporte", email, password }),
+        body: JSON.stringify({ tenant_slug: tenantSlug.trim().toLowerCase(), email, password }),
       });
       onLogin(result.user);
     } catch (err) {
@@ -324,9 +346,14 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
         <Brand />
         <div className="login-copy">
           <h1>Acessar central</h1>
-          <p>Entre com sua conta de administrador ou prestador.</p>
+          <p>Entre com sua conta da plataforma, empresa ou prestador.</p>
         </div>
         {error && <div className="form-error">{error}</div>}
+        <label>
+          Empresa
+          <Input value={tenantSlug} onChange={(e) => setTenantSlug(e.target.value.toLowerCase())} placeholder="identificador-da-empresa" pattern="[a-z0-9-]{2,80}" required />
+          <small>Administrador da plataforma: use <strong>plataforma</strong>.</small>
+        </label>
         <label>
           E-mail
           <Input
@@ -356,9 +383,7 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
         <Button type="submit" disabled={busy}>
           {busy ? "Entrando…" : "Entrar"}
         </Button>
-        <a href="#/abrir">
-          <ExternalLink /> Abrir um chamado sem conta
-        </a>
+        <small>O link público é fornecido pela sua empresa.</small>
         <small>O acesso e as tentativas de autenticação são registrados.</small>
       </form>
     </div>
@@ -367,14 +392,18 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
 
 function Authenticated({
   user,
+  onUserChange,
   onLogout,
 }: {
   user: User;
+  onUserChange: (user: User) => void;
   onLogout: () => void;
 }) {
-  type Route = "dashboard" | "tickets" | "settings" | "users" | "knowledge";
+  type Route = "dashboard" | "companies" | "tickets" | "settings" | "users" | "areas" | "knowledge" | "account";
+  const platform=user.role === "platform_admin";
+  const companyAdmin=user.role === "company_admin";
   const [route, setRoute] = useState<Route>(
-    user.role === "admin" ? "dashboard" : "tickets",
+    platform ? "dashboard" : "tickets",
   );
   async function logout() {
     await api("/api/auth/logout", { method: "POST" });
@@ -385,16 +414,9 @@ function Authenticated({
       <aside className="sidebar">
         <Brand />
         <nav>
-          {user.role === "agent" ? (
-            <Nav
-              active={route === "tickets"}
-              onClick={() => setRoute("tickets")}
-              icon={<Inbox />}
-              label="Chamados"
-            />
-          ) : (
+          {platform ? (
             <>
-              <p>ADMINISTRAÇÃO</p>
+              <p>PLATAFORMA</p>
               <Nav
                 active={route === "dashboard"}
                 onClick={() => setRoute("dashboard")}
@@ -402,16 +424,10 @@ function Authenticated({
                 label="Visão geral"
               />
               <Nav
-                active={route === "users"}
-                onClick={() => setRoute("users")}
-                icon={<Users />}
-                label="Prestadores"
-              />
-              <Nav
-                active={route === "knowledge"}
-                onClick={() => setRoute("knowledge")}
-                icon={<BookOpen />}
-                label="Base de conhecimento"
+                active={route === "companies"}
+                onClick={() => setRoute("companies")}
+                icon={<Building2 />}
+                label="Empresas"
               />
               <Nav
                 active={route === "settings"}
@@ -420,37 +436,44 @@ function Authenticated({
                 label="Inteligência Artificial"
               />
             </>
+          ) : (
+            <>
+              <p>ATENDIMENTO</p>
+              <Nav active={route === "tickets"} onClick={() => setRoute("tickets")} icon={<Inbox />} label="Chamados" />
+              {companyAdmin && <Nav active={route === "users"} onClick={() => setRoute("users")} icon={<Users />} label="Prestadores" />}
+              {companyAdmin && <Nav active={route === "areas"} onClick={() => setRoute("areas")} icon={<Layers3 />} label="Áreas" />}
+              {companyAdmin && <Nav active={route === "knowledge"} onClick={() => setRoute("knowledge")} icon={<BookOpen />} label="Base de conhecimento" />}
+              <Nav active={route === "account"} onClick={() => setRoute("account")} icon={<UserCircle />} label="Minha conta" />
+            </>
           )}
-          <p>PORTAL</p>
-          <a className="portal-link" href="#/abrir">
-            <ExternalLink /> Assistentes públicos
-          </a>
+          {!platform && user.tenant?.slug && <><p>PORTAL</p><a className="portal-link" href={`#/abrir/${user.tenant.slug}`}><ExternalLink /> Assistentes públicos</a></>}
         </nav>
         <div className="profile">
-          <b>
+          {user.avatar_url ? <i className="profile-avatar" role="img" aria-label="Foto do perfil" style={{backgroundImage:`url(${user.avatar_url})`}} /> : <b>
             {user.name
               .split(" ")
               .map((x) => x[0])
               .join("")
               .slice(0, 2)}
-          </b>
+          </b>}
           <span>
             <strong>{user.name}</strong>
             <small>
-              {user.role === "admin" ? "Administrador" : "Prestador"}
+              {platform ? "Administrador da plataforma" : companyAdmin ? "Administrador da empresa" : user.area?.name || "Prestador"}
             </small>
           </span>
-          <button onClick={logout} title="Sair">
-            <LogOut />
-          </button>
+          <AlertDialog><AlertDialogTrigger asChild><button title="Sair"><LogOut /></button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Deseja sair do sistema?</AlertDialogTitle><AlertDialogDescription>Sua sessão será encerrada e será necessário entrar novamente.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction onClick={logout}>Sair</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
         </div>
       </aside>
       <main>
-        {route === "tickets" && user.role === "agent" && <Tickets />}
-        {route === "dashboard" && user.role === "admin" && <AdminDashboard />}
-        {route === "settings" && user.role === "admin" && <AISettings />}
-        {route === "users" && user.role === "admin" && <UserManagement />}
-        {route === "knowledge" && user.role === "admin" && <KnowledgeBase />}
+        {route === "tickets" && !platform && <Tickets publicSlug={user.tenant?.slug} />}
+        {route === "dashboard" && platform && <AdminDashboard />}
+        {route === "companies" && platform && <CompanyManagement />}
+        {route === "settings" && platform && <AISettings />}
+        {route === "users" && companyAdmin && <UserManagement />}
+        {route === "areas" && companyAdmin && <AreaManagement />}
+        {route === "knowledge" && companyAdmin && <KnowledgeBase />}
+        {route === "account" && !platform && <MyAccount user={user} onSaved={onUserChange} />}
       </main>
     </div>
   );
@@ -493,7 +516,7 @@ function PageHeader({
   );
 }
 
-function Tickets() {
+function Tickets({publicSlug}:{publicSlug?:string}) {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -520,7 +543,7 @@ function Tickets() {
   const filtered = useMemo(
     () =>
       tickets.filter((t) =>
-        [t.title, t.requester_name, t.department, String(t.protocol)].some(
+        [t.title, t.requester_name, t.department,t.area_name||"", String(t.protocol)].some(
           (value) => value.toLowerCase().includes(query.toLowerCase()),
         ),
       ),
@@ -550,7 +573,7 @@ function Tickets() {
             <Button variant="outline" onClick={load}>
               <RefreshCw /> Atualizar
             </Button>
-            <Button onClick={() => (location.hash = "#/abrir")}>
+            <Button onClick={() => (location.hash = `#/abrir/${publicSlug}`)} disabled={!publicSlug}>
               <Plus /> Novo chamado
             </Button>
           </div>
@@ -615,7 +638,7 @@ function Tickets() {
           </div>
         </div>
         {tickets.length === 0 ? (
-          <EmptyTickets />
+          <EmptyTickets publicSlug={publicSlug} />
         ) : mode === "list" ? (
           <TicketTable tickets={filtered} onSelect={setSelected} />
         ) : (
@@ -652,13 +675,13 @@ function Metric({
     </article>
   );
 }
-function EmptyTickets() {
+function EmptyTickets({publicSlug}:{publicSlug?:string}) {
   return (
     <div className="empty-state">
       <Inbox />
       <h2>Nenhum chamado aberto</h2>
       <p>Os chamados enviados pelo portal público aparecerão aqui.</p>
-      <Button onClick={() => (location.hash = "#/abrir")}>
+      <Button onClick={() => (location.hash = `#/abrir/${publicSlug}`)} disabled={!publicSlug}>
         Abrir chamado de teste
       </Button>
     </div>
@@ -709,6 +732,7 @@ function TicketTable({
             <th>Chamado</th>
             <th>Solicitante</th>
             <th>Setor</th>
+            <th>Área</th>
             <th>Prioridade</th>
             <th>Abertura</th>
             <th>Status</th>
@@ -724,6 +748,7 @@ function TicketTable({
               </td>
               <td>{t.requester_name}</td>
               <td>{t.department}</td>
+              <td>{t.area_name||"—"}</td>
               <td>
                 <Badge variant="outline" className={t.priority}>
                   {priorityLabel[t.priority] || t.priority}
@@ -794,7 +819,7 @@ function Kanban({
                 </div>
                 <strong>{t.title}</strong>
                 <p>
-                  {t.requester_name} · {t.department}
+                  {t.requester_name} · {t.department} · {t.area_name}
                 </p>
                 <footer>
                   <Clock3 /> {formatDate(t.created_at)}
@@ -867,6 +892,7 @@ function TicketDrawer({
                 <span>Produto</span>
                 <strong>{ticket.product}</strong>
               </div>
+              <div><span>Área</span><strong>{ticket.area_name||"—"}</strong></div>
               <div>
                 <span>Status</span>
                 <strong>{statusLabel[ticket.status]}</strong>
@@ -1078,6 +1104,7 @@ function AdminDashboard() {
       {data && (
         <>
           <section className="metrics admin-metrics">
+            <Metric label="Empresas ativas" value={String(data.companies)} note="Ambientes cadastrados" />
             <Metric
               label="Prestadores ativos"
               value={String(data.active_providers)}
@@ -2059,8 +2086,32 @@ function RuleSwitch({
   );
 }
 
+function CompanyManagement() {
+  const [companies,setCompanies]=useState<Company[]>([]);const [error,setError]=useState("");const [notice,setNotice]=useState("");
+  const [form,setForm]=useState({name:"",public_slug:"",manager_name:"",manager_email:"",manager_password:""});
+  const load=useCallback(()=>api<Company[]>("/api/platform/companies").then(setCompanies).catch(e=>setError(e.message)),[]);
+  useEffect(()=>{load()},[load]);
+  async function create(e:FormEvent){e.preventDefault();setError("");setNotice("");try{const result=await api<{name:string;public_path:string}>("/api/platform/companies",{method:"POST",body:JSON.stringify(form)});setNotice(`${result.name} criada. Link público: ${location.origin}${result.public_path}`);setForm({name:"",public_slug:"",manager_name:"",manager_email:"",manager_password:""});load()}catch(err){setError(err instanceof Error?err.message:"Erro ao criar empresa")}}
+  return <><PageHeader eyebrow="PLATAFORMA" title="Empresas"/>{error&&<div className="form-error">{error}</div>}{notice&&<div className="form-success">{notice}</div>}<div className="users-layout"><form className="user-form" onSubmit={create}><h2>Nova empresa</h2><label>Nome<Input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} required/></label><label>Identificador do link<Input value={form.public_slug} onChange={e=>setForm({...form,public_slug:e.target.value.toLowerCase().replace(/[^a-z0-9-]/g,"")})} placeholder="minha-empresa" pattern="[a-z0-9-]{2,80}" required/></label><label>Nome do responsável<Input value={form.manager_name} onChange={e=>setForm({...form,manager_name:e.target.value})} required/></label><label>E-mail do responsável<Input type="email" value={form.manager_email} onChange={e=>setForm({...form,manager_email:e.target.value})} required/></label><label>Senha temporária<Input type="password" minLength={12} value={form.manager_password} onChange={e=>setForm({...form,manager_password:e.target.value})} required/></label><Button type="submit"><Plus/>Criar empresa</Button></form><section className="user-list"><h2>Empresas cadastradas</h2>{companies.map(company=><article key={company.id}><b><Building2/></b><span><strong>{company.name}</strong><small>{company.public_slug} · {company.managers} gestor(es) · {company.areas} área(s)</small><a href={company.public_path}><ExternalLink/> Abrir portal</a></span><Badge variant="outline">{company.active?"Ativa":"Inativa"}</Badge></article>)}</section></div></>;
+}
+
+function AreaManagement() {
+  const [areas,setAreas]=useState<Area[]>([]);const [name,setName]=useState("");const [error,setError]=useState("");
+  const load=useCallback(()=>api<Area[]>("/api/company/areas").then(setAreas).catch(e=>setError(e.message)),[]);useEffect(()=>{load()},[load]);
+  async function create(e:FormEvent){e.preventDefault();setError("");try{await api("/api/company/areas",{method:"POST",body:JSON.stringify({name})});setName("");load()}catch(err){setError(err instanceof Error?err.message:"Erro ao criar área")}}
+  return <><PageHeader eyebrow="EMPRESA" title="Áreas de atendimento"/>{error&&<div className="form-error">{error}</div>}<div className="users-layout"><form className="user-form" onSubmit={create}><h2>Nova área</h2><p>Áreas isolam prestadores, chamados e fontes da IA.</p><label>Nome<Input value={name} onChange={e=>setName(e.target.value)} placeholder="Ex.: Financeiro" required/></label><Button type="submit"><Plus/>Criar área</Button></form><section className="user-list"><h2>Áreas cadastradas</h2>{areas.map(area=><article key={area.id}><b><Layers3/></b><span><strong>{area.name}</strong><small>Base e chamados próprios</small></span><Badge variant="outline">{area.active?"Ativa":"Inativa"}</Badge></article>)}</section></div></>;
+}
+
+function MyAccount({user,onSaved}:{user:User;onSaved:(user:User)=>void}) {
+  const [name,setName]=useState(user.name);const [email,setEmail]=useState(user.email);const [photo,setPhoto]=useState<File|null>(null);const [error,setError]=useState("");const [notice,setNotice]=useState("");const [busy,setBusy]=useState(false);
+  async function save(e:FormEvent){e.preventDefault();setBusy(true);setError("");setNotice("");const data=new FormData();data.append("name",name);data.append("email",email);if(photo)data.append("avatar",photo);try{const updated=await api<User>("/api/account",{method:"PUT",body:data});onSaved(updated);setNotice("Dados da conta atualizados.");setPhoto(null)}catch(err){setError(err instanceof Error?err.message:"Erro ao atualizar conta")}finally{setBusy(false)}}
+  return <><PageHeader eyebrow="CONTA" title="Minha conta"/><form className="account-form" onSubmit={save}>{error&&<div className="form-error">{error}</div>}{notice&&<div className="form-success">{notice}</div>}<div className="account-photo">{user.avatar_url?<i className="account-avatar" role="img" aria-label="Foto do perfil" style={{backgroundImage:`url(${user.avatar_url})`}}/>:<UserCircle/>}<label><Camera/> Escolher foto<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setPhoto(e.target.files?.[0]||null)}/></label><small>JPEG, PNG ou WebP · máximo de 2 MB.</small></div><label>Nome<Input value={name} onChange={e=>setName(e.target.value)} maxLength={120} required/></label><label>E-mail<Input type="email" value={email} onChange={e=>setEmail(e.target.value)} maxLength={254} required/></label>{user.area&&<label>Área<Input value={user.area.name} disabled/></label>}<Button type="submit" disabled={busy}>{busy?"Salvando…":"Salvar alterações"}</Button></form></>;
+}
+
 function KnowledgeBase() {
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
+  const [areas,setAreas]=useState<Area[]>([]);
+  const [areaId,setAreaId]=useState("");
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2068,14 +2119,15 @@ function KnowledgeBase() {
   const [notice, setNotice] = useState("");
   const load = useCallback(
     () =>
-      api<KnowledgeDocument[]>("/api/admin/knowledge/documents")
+      api<KnowledgeDocument[]>(`/api/company/knowledge/documents${areaId?`?area_id=${areaId}`:""}`)
         .then(setDocuments)
         .catch((e) => setError(e.message)),
-    [],
+    [areaId],
   );
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(()=>{api<Area[]>("/api/company/areas").then(value=>{setAreas(value);setAreaId(current=>current||value[0]?.id||"")}).catch(e=>setError(e.message))},[]);
   async function upload(e: FormEvent) {
     e.preventDefault();
     if (!file) return;
@@ -2085,9 +2137,10 @@ function KnowledgeBase() {
     const data = new FormData();
     data.append("file", file);
     data.append("title", title);
+    data.append("area_id",areaId);
     try {
       const result = await api<{ title: string; chunks: number }>(
-        "/api/admin/knowledge/documents",
+        "/api/company/knowledge/documents",
         { method: "POST", body: data },
       );
       setNotice(
@@ -2129,6 +2182,7 @@ function KnowledgeBase() {
               maxLength={180}
             />
           </label>
+          <label>Área<Select value={areaId} onValueChange={setAreaId}><SelectTrigger><SelectValue placeholder="Selecione a área"/></SelectTrigger><SelectContent>{areas.map(area=><SelectItem key={area.id} value={area.id}>{area.name}</SelectItem>)}</SelectContent></Select></label>
           <label>
             Arquivo
             <input
@@ -2141,7 +2195,7 @@ function KnowledgeBase() {
           <small>
             PDF, DOCX, TXT ou Markdown · máximo de 10 MB · até 200 páginas.
           </small>
-          <Button type="submit" disabled={!file || busy}>
+          <Button type="submit" disabled={!file || !areaId || busy}>
             <Upload /> {busy ? "Processando…" : "Enviar para a base"}
           </Button>
         </form>
@@ -2177,7 +2231,7 @@ function KnowledgeBase() {
                 <span>
                   <strong>{document.title}</strong>
                   <small>
-                    {document.filename}
+                    {document.area_name} · {document.filename}
                     {document.kind === "document"
                       ? ` · ${document.chunks} trechos`
                       : " · disponível no RAG"}
@@ -2199,16 +2253,18 @@ function KnowledgeBase() {
 
 function UserManagement() {
   const [users, setUsers] = useState<User[]>([]);
+  const [areas,setAreas]=useState<Area[]>([]);
   const [form, setForm] = useState({
     name: "",
     email: "",
     password: "",
+    area_id: "",
     role: "agent" as const,
   });
   const [error, setError] = useState("");
   const load = useCallback(
     () =>
-      api<User[]>("/api/admin/users")
+      api<User[]>("/api/company/users")
         .then(setUsers)
         .catch((e) => setError(e.message)),
     [],
@@ -2216,15 +2272,16 @@ function UserManagement() {
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(()=>{api<Area[]>("/api/company/areas").then(value=>{setAreas(value);setForm(current=>({...current,area_id:current.area_id||value[0]?.id||""}))}).catch(e=>setError(e.message))},[]);
   async function create(e: FormEvent) {
     e.preventDefault();
     setError("");
     try {
-      await api("/api/admin/users", {
+      await api("/api/company/users", {
         method: "POST",
         body: JSON.stringify(form),
       });
-      setForm({ name: "", email: "", password: "", role: "agent" });
+      setForm({ name: "", email: "", password: "", area_id:areas[0]?.id||"", role: "agent" });
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro");
@@ -2264,6 +2321,7 @@ function UserManagement() {
               required
             />
           </label>
+          <label>Área<Select value={form.area_id} onValueChange={area_id=>setForm({...form,area_id})}><SelectTrigger><SelectValue placeholder="Selecione a área"/></SelectTrigger><SelectContent>{areas.map(area=><SelectItem key={area.id} value={area.id}>{area.name}</SelectItem>)}</SelectContent></Select></label>
           <Button type="submit">
             <Plus /> Criar prestador
           </Button>
@@ -2281,7 +2339,7 @@ function UserManagement() {
               </b>
               <span>
                 <strong>{u.name}</strong>
-                <small>{u.email}</small>
+                <small>{u.email} · {u.area_name}</small>
               </span>
               <Badge variant="outline">Prestador</Badge>
             </article>
@@ -2317,8 +2375,11 @@ function formatGenerationTime(milliseconds: number) {
     maximumFractionDigits: 1,
   })} s`;
 }
-function PublicPortal({ onBack }: { onBack: () => void }) {
+function PublicPortal({ slug,onBack }: { slug:string;onBack: () => void }) {
   const [context, setContext] = useState("");
+  const [company,setCompany]=useState("");
+  const [areas,setAreas]=useState<Area[]>([]);
+  const [areaId,setAreaId]=useState("");
   const [model, setModel] = useState("Assistente");
   const [mode, setMode] = useState<AssistantMode | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -2343,13 +2404,16 @@ function PublicPortal({ onBack }: { onBack: () => void }) {
   const [generationTokensEstimated, setGenerationTokensEstimated] =
     useState(true);
   useEffect(() => {
-    api<{ public_context: string; model: string }>("/api/public/zoho-suporte")
+    api<{ public_context: string; model: string;company:string;areas:Area[] }>(`/api/public/${encodeURIComponent(slug)}`)
       .then((r) => {
         setContext(r.public_context);
         setModel(r.model);
+        setCompany(r.company);
+        setAreas(r.areas);
+        setAreaId(r.areas[0]?.id||"");
       })
       .catch((e) => setError(e.message));
-  }, []);
+  }, [slug]);
   useEffect(() => {
     if (!busy) return;
     const started = performance.now();
@@ -2387,7 +2451,9 @@ function PublicPortal({ onBack }: { onBack: () => void }) {
     setLastRequest(request);
     try {
       const result = await streamChat(
+        slug,
         {
+          area_id:areaId,
           public_context: context,
           requester_name: identity.requester_name,
           department: identity.department,
@@ -2432,7 +2498,7 @@ function PublicPortal({ onBack }: { onBack: () => void }) {
     }
   }
   async function send(action: "message" | "summarize" = "message") {
-    if (!mode || !context || busy) return;
+    if (!mode || !context || !areaId || busy) return;
     if (action === "message" && !draft.trim()) return;
     if (
       action === "summarize" &&
@@ -2489,11 +2555,12 @@ function PublicPortal({ onBack }: { onBack: () => void }) {
     setError("");
     try {
       const result = await api<{ protocol: number }>(
-        "/api/public/zoho-suporte/tickets",
+        `/api/public/${encodeURIComponent(slug)}/tickets`,
         {
           method: "POST",
           body: JSON.stringify({
             ...summary,
+            area_id:areaId,
             assistant_mode: "intake",
             public_context: context,
           }),
@@ -2527,14 +2594,15 @@ function PublicPortal({ onBack }: { onBack: () => void }) {
           <Brand />
           <div>
             <small>COMO PODEMOS AJUDAR?</small>
-            <h1>Escolha o tipo de atendimento</h1>
+            <h1>{company||"Escolha o tipo de atendimento"}</h1>
             <p>
               Você pode tentar encontrar uma solução ou abrir um chamado
               diretamente.
             </p>
           </div>
+          <label className="area-choice">Área do atendimento<Select value={areaId} onValueChange={setAreaId}><SelectTrigger><SelectValue placeholder="Selecione a área"/></SelectTrigger><SelectContent>{areas.map(area=><SelectItem key={area.id} value={area.id}>{area.name}</SelectItem>)}</SelectContent></Select><small>A escolha define quais prestadores, documentos e chamados a IA poderá consultar.</small></label>
           {error && <div className="form-error">{error}</div>}
-          <button onClick={() => start("support")} disabled={!context}>
+          <button onClick={() => start("support")} disabled={!context||!areaId}>
             <i>
               <Sparkles />
             </i>
@@ -2547,7 +2615,7 @@ function PublicPortal({ onBack }: { onBack: () => void }) {
             </span>
             <ChevronDown />
           </button>
-          <button onClick={() => start("intake")} disabled={!context}>
+          <button onClick={() => start("intake")} disabled={!context||!areaId}>
             <i>
               <TicketCheck />
             </i>

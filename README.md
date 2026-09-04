@@ -2,7 +2,7 @@
 
 Central de chamados com dois assistentes públicos, gestão em lista e Kanban arrastável, histórico de etapas, resolução estruturada, documentos internos e seleção de modelos instalados no Ollama.
 
-As áreas internas exigem login. O administrador gerencia prestadores, documentos e IA e acompanha apenas métricas agregadas da plataforma. O prestador é o único perfil que acessa, movimenta e resolve chamados. O portal de abertura permanece público.
+As áreas internas exigem login e possuem três níveis. O administrador da plataforma cria empresas e gerencia somente métricas agregadas, modelos, APIs e Skills. O administrador da empresa atende chamados, cria áreas e prestadores e mantém a base de conhecimento. Cada prestador atende exclusivamente os chamados da área atribuída.
 
 ## Executar
 
@@ -15,7 +15,7 @@ O navegador não acessa mais a porta da API diretamente. Login, chat e administr
 
 `POSTGRES_PASSWORD` aceita senhas fortes com caracteres especiais como `@`, `:`, `/` e `#`. A API recebe host, usuário e senha em variáveis separadas para que esses caracteres não corrompam o endereço do banco.
 
-O portal inicial usa o slug `zoho-suporte`. O primeiro administrador é criado com `BOOTSTRAP_ADMIN_EMAIL` e `BOOTSTRAP_ADMIN_PASSWORD`.
+O primeiro administrador da plataforma é criado com `BOOTSTRAP_ADMIN_EMAIL` e `BOOTSTRAP_ADMIN_PASSWORD`. Para entrar, use o identificador de empresa `plataforma`. Em **Empresas**, crie cada conta empresarial e seu responsável; o sistema mostrará o link público `http://localhost:3001/#/abrir/<identificador>`.
 
 Defina também `AI_CREDENTIALS_KEY` no `.env` antes de salvar segredos de APIs externas. No PowerShell, você pode gerar uma chave com:
 
@@ -25,7 +25,7 @@ Defina também `AI_CREDENTIALS_KEY` no `.env` antes de salvar segredos de APIs e
 
 Guarde esse valor e não o altere depois: ele protege as credenciais já gravadas.
 
-Entre na tela de login com esses dois valores. Em **Prestadores**, o administrador pode criar contas de atendimento. A área **Inteligência Artificial** possui três menus:
+Na conta empresarial, crie as áreas e depois os prestadores, atribuindo uma área a cada conta. O administrador da empresa também escolhe a área de cada documento enviado. A área **Inteligência Artificial**, exclusiva da plataforma, possui três menus:
 
 - **Adicionar Modelos:** reconhece todos os modelos reais do Ollama por `/api/tags` e conecta uma API externa compatível com Chat Completions. Existem presets para OpenAI, DeepSeek, Groq e OpenRouter, além de URL personalizada.
 - **Configurar Modelos:** seleciona separadamente o modelo de conversação e o modelo de embeddings, inclusive com origens diferentes. Também configura contexto máximo, tokens por resposta, temperatura, tempo limite entre 15 e 300 segundos e as regras que validam a saída do modelo.
@@ -44,7 +44,7 @@ O assistente virtual continua podendo usar o conteúdo completo das Skills e da 
 
 As Skills são tratadas como instruções administrativas não confiáveis: somente arquivos de texto/Markdown de até 128 KB são aceitos, redirecionamentos e destinos privados são bloqueados, o conteúdo nunca é executado e não pode substituir as regras de segurança ou permissões do sistema.
 
-Em **Base de conhecimento**, administradores podem enviar PDF, DOCX, TXT e Markdown de até 10 MB. Os arquivos são validados, têm o texto extraído e são divididos em trechos pesquisáveis. Instalações existentes recebem as novas tabelas automaticamente durante a inicialização da API.
+Em **Base de conhecimento**, administradores da empresa podem enviar PDF, DOCX, TXT e Markdown de até 10 MB para uma área específica. Os arquivos são validados, têm o texto extraído e são divididos em trechos pesquisáveis. O usuário seleciona a área no portal, e a IA consulta somente documentos, resoluções e chamados semelhantes daquela empresa e área. Instalações existentes recebem a área **Geral** automaticamente durante a inicialização da API.
 
 Se você tentou uma versão anterior que falhou durante a imagem web, force a reconstrução com `docker compose build --no-cache web` antes de executar novamente.
 
@@ -55,9 +55,10 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 
 ## Segurança implementada
 
-- isolamento por `tenant_id` e políticas RLS forçadas no PostgreSQL;
+- isolamento por empresa (`tenant_id`) e políticas RLS forçadas no PostgreSQL;
+- isolamento operacional por `area_id` para chamados, prestadores, documentos e resoluções pesquisáveis;
 - autorização administrativa validada na API;
-- separação de funções: administradores recebem somente métricas agregadas e prestadores gerenciam chamados;
+- separação de funções entre administrador da plataforma, administrador da empresa e prestador;
 - senha com Argon2 e sessão JWT curta armazenada em cookie `HttpOnly`;
 - links públicos assinados e vinculados ao tenant;
 - rate limit no login e portal público;
