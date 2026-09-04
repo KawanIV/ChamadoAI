@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Chamados — Suporte Zoho",
-  description: "Central inteligente de chamados para suporte aos produtos Zoho",
+  title: "Chamados — Suporte Técnico",
+  description: "Central inteligente de chamados para suporte técnico",
   other: {
     "codex-preview": "development",
   },
