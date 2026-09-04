@@ -5,12 +5,12 @@ from .database import SessionLocal, set_platform_context
 from .models import AIConfig, Role, Skill, Tenant, User
 from .security import hash_password
 
-TENANT_TABLES=("users","tickets","resolutions","ai_configs","knowledge_documents","knowledge_chunks","ticket_status_history","usage_events","skills")
+TENANT_TABLES=("users","tickets","resolutions","ai_configs","knowledge_documents","knowledge_chunks","ticket_status_history","usage_events","skills","ticket_attachments","audit_logs")
 POLICY_TABLES=(*TENANT_TABLES,"areas")
 
 async def ensure_runtime_schema(db):
     statements=[
-        *[f"ALTER TABLE IF EXISTS {table} DISABLE ROW LEVEL SECURITY" for table in TENANT_TABLES],
+        *[f"ALTER TABLE IF EXISTS {table} DISABLE ROW LEVEL SECURITY" for table in POLICY_TABLES],
         "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check",
         "ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN('admin','platform_admin','company_admin','agent')) NOT VALID",
         "ALTER TABLE users VALIDATE CONSTRAINT users_role_check",
@@ -19,6 +19,7 @@ async def ensure_runtime_schema(db):
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS area_id uuid REFERENCES areas(id)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data bytea",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_content_type varchar(40)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at timestamptz",
         "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS area_id uuid REFERENCES areas(id)",
         "CREATE TABLE IF NOT EXISTS knowledge_documents(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid NOT NULL REFERENCES tenants(id),area_id uuid REFERENCES areas(id),title varchar(180) NOT NULL,filename varchar(255) NOT NULL,content_type varchar(100) NOT NULL,sha256 varchar(64) NOT NULL,status varchar(20) NOT NULL DEFAULT 'active',uploaded_by uuid NOT NULL REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now())",
         "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS area_id uuid REFERENCES areas(id)",
@@ -39,10 +40,13 @@ async def ensure_runtime_schema(db):
         "ALTER TABLE ai_configs ADD COLUMN IF NOT EXISTS embedding_source varchar(20) NOT NULL DEFAULT 'ollama'",
         "ALTER TABLE ai_configs ADD COLUMN IF NOT EXISTS response_timeout_seconds integer NOT NULL DEFAULT 90",
         "ALTER TABLE ai_configs ADD COLUMN IF NOT EXISTS valid_response_rules jsonb NOT NULL DEFAULT '{\"allow_plain_text_repair\":true,\"reject_repeated_questions\":true,\"require_context_reference\":false,\"require_summary_fields\":true}'::jsonb",
+        "ALTER TABLE ai_configs ADD COLUMN IF NOT EXISTS runtime_profiles jsonb NOT NULL DEFAULT '{}'::jsonb",
         "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS prompt_tokens integer",
         "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS response_tokens integer",
         "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS tokens_estimated boolean NOT NULL DEFAULT false",
         "CREATE TABLE IF NOT EXISTS skills(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid NOT NULL REFERENCES tenants(id),name varchar(160) NOT NULL,source_url varchar(1000) NOT NULL,content text NOT NULL,sha256 varchar(64) NOT NULL,scope varchar(20) NOT NULL DEFAULT 'all',active boolean NOT NULL DEFAULT false,created_by uuid NOT NULL REFERENCES users(id),last_test_model varchar(120),last_test_success boolean,last_test_ms integer,last_test_at timestamptz,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(tenant_id,sha256))",
+        "CREATE TABLE IF NOT EXISTS ticket_attachments(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid NOT NULL REFERENCES tenants(id),ticket_id uuid NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,filename varchar(255) NOT NULL,content_type varchar(40) NOT NULL,size_bytes integer NOT NULL,data bytea NOT NULL,created_at timestamptz NOT NULL DEFAULT now())",
+        "CREATE TABLE IF NOT EXISTS audit_logs(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid NOT NULL REFERENCES tenants(id),actor_user_id uuid REFERENCES users(id),actor_role varchar(20) NOT NULL,action varchar(80) NOT NULL,target_type varchar(40) NOT NULL,target_id varchar(80),details jsonb NOT NULL DEFAULT '{}'::jsonb,created_at timestamptz NOT NULL DEFAULT now())",
         "CREATE INDEX IF NOT EXISTS users_tenant_area_idx ON users(tenant_id,area_id)",
         "CREATE INDEX IF NOT EXISTS tickets_tenant_area_idx ON tickets(tenant_id,area_id,created_at DESC)",
         "CREATE INDEX IF NOT EXISTS knowledge_documents_tenant_idx ON knowledge_documents(tenant_id,area_id,created_at DESC)",
@@ -50,6 +54,8 @@ async def ensure_runtime_schema(db):
         "CREATE INDEX IF NOT EXISTS ticket_status_history_tenant_idx ON ticket_status_history(tenant_id,ticket_id,entered_at)",
         "CREATE INDEX IF NOT EXISTS usage_events_tenant_idx ON usage_events(tenant_id,created_at DESC)",
         "CREATE INDEX IF NOT EXISTS skills_tenant_idx ON skills(tenant_id,created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ticket_attachments_tenant_idx ON ticket_attachments(tenant_id,ticket_id)",
+        "CREATE INDEX IF NOT EXISTS audit_logs_tenant_idx ON audit_logs(tenant_id,created_at DESC)",
         *[f"DROP POLICY IF EXISTS {table}_tenant ON {table}" for table in POLICY_TABLES],
         *[f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" for table in POLICY_TABLES],
         *[f"CREATE POLICY {table}_tenant ON {table} USING(current_setting('app.platform_admin',true)='true' OR tenant_id=current_setting('app.tenant_id',true)::uuid) WITH CHECK(current_setting('app.platform_admin',true)='true' OR tenant_id=current_setting('app.tenant_id',true)::uuid)" for table in POLICY_TABLES],
@@ -83,7 +89,7 @@ async def main():
         await db.flush()
         if not await db.get(AIConfig,platform.id):
             source=(await db.execute(select(AIConfig).join(Tenant,Tenant.id==AIConfig.tenant_id).where(Tenant.public_slug!="plataforma"))).scalars().first()
-            if source:db.add(AIConfig(tenant_id=platform.id,provider=source.provider,model=source.model,embedding_model=source.embedding_model,conversation_source=source.conversation_source,embedding_source=source.embedding_source,api_base_url=source.api_base_url,api_key_encrypted=source.api_key_encrypted,context_size=source.context_size,max_tokens=source.max_tokens,temperature=source.temperature,response_timeout_seconds=source.response_timeout_seconds,valid_response_rules=source.valid_response_rules))
+            if source:db.add(AIConfig(tenant_id=platform.id,provider=source.provider,model=source.model,embedding_model=source.embedding_model,conversation_source=source.conversation_source,embedding_source=source.embedding_source,api_base_url=source.api_base_url,api_key_encrypted=source.api_key_encrypted,context_size=source.context_size,max_tokens=source.max_tokens,temperature=source.temperature,response_timeout_seconds=source.response_timeout_seconds,valid_response_rules=source.valid_response_rules,runtime_profiles=source.runtime_profiles or {}))
             else:db.add(AIConfig(tenant_id=platform.id,provider="ollama",model=settings.default_model,embedding_model="nomic-embed-text",conversation_source="ollama",embedding_source="ollama",context_size=8192,max_tokens=512,temperature="0.2",response_timeout_seconds=90,valid_response_rules={"allow_plain_text_repair":True,"reject_repeated_questions":True,"require_context_reference":False,"require_summary_fields":True}))
         existing_digests=set((await db.execute(select(Skill.sha256).where(Skill.tenant_id==platform.id))).scalars().all())
         legacy_skills=(await db.execute(select(Skill).where(Skill.tenant_id!=platform.id).order_by(Skill.created_at))).scalars().all()

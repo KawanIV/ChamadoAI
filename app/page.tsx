@@ -18,17 +18,21 @@ import {
   List,
   LogOut,
   MoreHorizontal,
+  Paperclip,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
   Send,
   Settings,
   ShieldCheck,
+  ScrollText,
   Sparkles,
   TicketCheck,
   Upload,
   Users,
   UserCircle,
+  Trash2,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -45,9 +49,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type Area = { id: string; name: string; active: boolean; created_at?: string };
-type Company = { id: string; name: string; public_slug: string; active: boolean; managers: number; areas: number; public_path: string };
+type Company = { id: string; name: string; public_slug: string; active: boolean; managers: number; manager_name:string;manager_email:string;areas: number; public_path: string };
+type AuditEntry={id:string;tenant_id:string;tenant_name?:string|null;actor_name:string;actor_role:string;action:string;target_type:string;target_id?:string|null;details:Record<string,unknown>;created_at:string};
 
 type User = {
   id: string;
@@ -58,6 +64,7 @@ type User = {
   area?: { id: string; name: string } | null;
   area_id?: string;
   area_name?: string;
+  active?: boolean;
   avatar_url?: string | null;
 };
 type StatusHistory = {
@@ -88,6 +95,7 @@ type Ticket = {
   priority: string;
   created_at: string;
   resolution: TicketResolution | null;
+  attachments:{id:string;filename:string;content_type:string;size_bytes:number;url:string}[];
   status_history: StatusHistory[];
 };
 type OllamaModel = {
@@ -399,7 +407,7 @@ function Authenticated({
   onUserChange: (user: User) => void;
   onLogout: () => void;
 }) {
-  type Route = "dashboard" | "companies" | "tickets" | "settings" | "users" | "areas" | "knowledge" | "account";
+  type Route = "dashboard" | "companies" | "audit" | "tickets" | "settings" | "users" | "areas" | "knowledge" | "account";
   const platform=user.role === "platform_admin";
   const companyAdmin=user.role === "company_admin";
   const [route, setRoute] = useState<Route>(
@@ -429,6 +437,7 @@ function Authenticated({
                 icon={<Building2 />}
                 label="Empresas"
               />
+              <Nav active={route === "audit"} onClick={() => setRoute("audit")} icon={<ScrollText />} label="Auditoria" />
               <Nav
                 active={route === "settings"}
                 onClick={() => setRoute("settings")}
@@ -443,6 +452,7 @@ function Authenticated({
               {companyAdmin && <Nav active={route === "users"} onClick={() => setRoute("users")} icon={<Users />} label="Prestadores" />}
               {companyAdmin && <Nav active={route === "areas"} onClick={() => setRoute("areas")} icon={<Layers3 />} label="Áreas" />}
               {companyAdmin && <Nav active={route === "knowledge"} onClick={() => setRoute("knowledge")} icon={<BookOpen />} label="Base de conhecimento" />}
+              {companyAdmin && <Nav active={route === "audit"} onClick={() => setRoute("audit")} icon={<ScrollText />} label="Auditoria" />}
               <Nav active={route === "account"} onClick={() => setRoute("account")} icon={<UserCircle />} label="Minha conta" />
             </>
           )}
@@ -466,10 +476,11 @@ function Authenticated({
         </div>
       </aside>
       <main>
-        {route === "tickets" && !platform && <Tickets publicSlug={user.tenant?.slug} />}
+        {route === "tickets" && !platform && <Tickets publicSlug={user.tenant?.slug} companyAdmin={companyAdmin} />}
         {route === "dashboard" && platform && <AdminDashboard />}
         {route === "companies" && platform && <CompanyManagement />}
         {route === "settings" && platform && <AISettings />}
+        {route === "audit" && <AuditLogPage platform={platform} />}
         {route === "users" && companyAdmin && <UserManagement />}
         {route === "areas" && companyAdmin && <AreaManagement />}
         {route === "knowledge" && companyAdmin && <KnowledgeBase />}
@@ -516,11 +527,12 @@ function PageHeader({
   );
 }
 
-function Tickets({publicSlug}:{publicSlug?:string}) {
+function Tickets({publicSlug,companyAdmin=false}:{publicSlug?:string;companyAdmin?:boolean}) {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"list" | "kanban">("list");
+  const [filters,setFilters]=useState({status:"all",priority:"all",department:"all",area:"all",product:"all"});
   const [selected, setSelected] = useState<Ticket | null>(null);
   const load = useCallback(
     () =>
@@ -543,12 +555,15 @@ function Tickets({publicSlug}:{publicSlug?:string}) {
   const filtered = useMemo(
     () =>
       tickets.filter((t) =>
-        [t.title, t.requester_name, t.department,t.area_name||"", String(t.protocol)].some(
+        [t.title,t.summary,t.product, t.requester_name, t.department,t.area_name||"", String(t.protocol)].some(
           (value) => value.toLowerCase().includes(query.toLowerCase()),
-        ),
+        ) && (filters.status==="all"||t.status===filters.status) && (filters.priority==="all"||t.priority===filters.priority) && (filters.department==="all"||t.department===filters.department) && (filters.area==="all"||t.area_id===filters.area) && (filters.product==="all"||t.product===filters.product),
       ),
-    [tickets, query],
+    [tickets, query,filters],
   );
+  const departments=useMemo(()=>Array.from(new Set(tickets.map(t=>t.department))).sort(),[tickets]);
+  const areas=useMemo(()=>Array.from(new Map(tickets.map(t=>[t.area_id,{id:t.area_id,name:t.area_name||"Sem área"}])).values()),[tickets]);
+  const products=useMemo(()=>Array.from(new Set(tickets.map(t=>t.product))).sort(),[tickets]);
   async function move(ticket: Ticket, status: string) {
     setError("");
     try {
@@ -637,6 +652,14 @@ function Tickets({publicSlug}:{publicSlug?:string}) {
             </span>
           </div>
         </div>
+        <div className="ticket-filters" aria-label="Filtros personalizados">
+          <Select value={filters.status} onValueChange={status=>setFilters({...filters,status})}><SelectTrigger><SelectValue placeholder="Status"/></SelectTrigger><SelectContent><SelectItem value="all">Todos os status</SelectItem>{columns.map(value=><SelectItem key={value} value={value}>{statusLabel[value]}</SelectItem>)}</SelectContent></Select>
+          <Select value={filters.priority} onValueChange={priority=>setFilters({...filters,priority})}><SelectTrigger><SelectValue placeholder="Prioridade"/></SelectTrigger><SelectContent><SelectItem value="all">Todas as prioridades</SelectItem>{Object.entries(priorityLabel).map(([value,label])=><SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select>
+          <Select value={filters.department} onValueChange={department=>setFilters({...filters,department})}><SelectTrigger><SelectValue placeholder="Setor"/></SelectTrigger><SelectContent><SelectItem value="all">Todos os setores</SelectItem>{departments.map(value=><SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
+          <Select value={filters.area} onValueChange={area=>setFilters({...filters,area})}><SelectTrigger><SelectValue placeholder="Área"/></SelectTrigger><SelectContent><SelectItem value="all">Todas as áreas</SelectItem>{areas.map(value=><SelectItem key={value.id} value={value.id}>{value.name}</SelectItem>)}</SelectContent></Select>
+          <Select value={filters.product} onValueChange={product=>setFilters({...filters,product})}><SelectTrigger><SelectValue placeholder="Problema/produto"/></SelectTrigger><SelectContent><SelectItem value="all">Todos os produtos</SelectItem>{products.map(value=><SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
+          <Button variant="outline" onClick={()=>{setQuery("");setFilters({status:"all",priority:"all",department:"all",area:"all",product:"all"})}}>Limpar filtros</Button>
+        </div>
         {tickets.length === 0 ? (
           <EmptyTickets publicSlug={publicSlug} />
         ) : mode === "list" ? (
@@ -648,6 +671,8 @@ function Tickets({publicSlug}:{publicSlug?:string}) {
       {selected && (
         <TicketDrawer
           ticket={selected}
+          companyAdmin={companyAdmin}
+          areas={areas}
           onClose={() => setSelected(null)}
           onChanged={load}
         />
@@ -787,6 +812,7 @@ function Kanban({
         <section
           key={c}
           className="kanban-column"
+          data-status={c}
           onDragOver={(event) => event.preventDefault()}
           onDrop={() => {
             if (dragged && dragged.status !== c) void onMove(dragged, c);
@@ -833,13 +859,19 @@ function Kanban({
 }
 function TicketDrawer({
   ticket,
+  companyAdmin,
+  areas,
   onClose,
   onChanged,
 }: {
   ticket: Ticket;
+  companyAdmin:boolean;
+  areas:{id:string;name:string}[];
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const [edit,setEdit]=useState({requester_name:ticket.requester_name,department:ticket.department,contact:ticket.contact||"",title:ticket.title,summary:ticket.summary,product:ticket.product,priority:ticket.priority,area_id:ticket.area_id});
+  const [editError,setEditError]=useState("");
   async function changeStatus(status: string) {
     await api(`/api/tickets/${ticket.id}/status`, {
       method: "PATCH",
@@ -847,6 +879,7 @@ function TicketDrawer({
     });
     onChanged();
   }
+  async function saveTicket(e:FormEvent){e.preventDefault();setEditError("");try{await api(`/api/tickets/${ticket.id}`,{method:"PATCH",body:JSON.stringify({...edit,contact:edit.contact||null})});onChanged()}catch(error){setEditError(error instanceof Error?error.message:"Não foi possível editar o chamado")}}
   const history = ticket.status_history.length
     ? ticket.status_history
     : [{ status: "new", entered_at: ticket.created_at, changed_by: null }];
@@ -865,6 +898,7 @@ function TicketDrawer({
         <Tabs defaultValue="overview">
           <TabsList>
             <TabsTrigger value="overview">Visão geral</TabsTrigger>
+            <TabsTrigger value="edit">Editar</TabsTrigger>
             <TabsTrigger value="history">Histórico</TabsTrigger>
             <TabsTrigger value="resolution">Resolução</TabsTrigger>
           </TabsList>
@@ -879,6 +913,7 @@ function TicketDrawer({
                 </small>
               </div>
             </div>
+            {ticket.attachments.length>0&&<div className="ticket-attachments"><strong><Paperclip/> Imagens anexadas</strong>{ticket.attachments.map(item=><a key={item.id} href={item.url} target="_blank" rel="noreferrer"><Paperclip/>{item.filename}<small>{(item.size_bytes/1024/1024).toFixed(2)} MB</small></a>)}</div>}
             <div className="details ticket-details">
               <div>
                 <span>Solicitante</span>
@@ -921,6 +956,21 @@ function TicketDrawer({
                 </SelectContent>
               </Select>
             </label>
+          </TabsContent>
+          <TabsContent value="edit">
+            <form className="ticket-edit-form" onSubmit={saveTicket}>
+              {editError&&<div className="form-error">{editError}</div>}
+              <label>Solicitante<Input value={edit.requester_name} onChange={e=>setEdit({...edit,requester_name:e.target.value})} required/></label>
+              <label>Setor<Input value={edit.department} onChange={e=>setEdit({...edit,department:e.target.value})} required/></label>
+              <label>Contato<Input value={edit.contact} onChange={e=>setEdit({...edit,contact:e.target.value})}/></label>
+              <label>Título<Input value={edit.title} onChange={e=>setEdit({...edit,title:e.target.value})} required/></label>
+              <label className="wide">Descrição<Textarea value={edit.summary} onChange={e=>setEdit({...edit,summary:e.target.value})} required/></label>
+              <label>Produto<Input value={edit.product} onChange={e=>setEdit({...edit,product:e.target.value})} required/></label>
+              <label>Prioridade<Select value={edit.priority} onValueChange={priority=>setEdit({...edit,priority})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="low">Baixa</SelectItem><SelectItem value="normal">Normal</SelectItem><SelectItem value="high">Alta</SelectItem></SelectContent></Select></label>
+              {companyAdmin&&<label>Área<Select value={edit.area_id} onValueChange={area_id=>setEdit({...edit,area_id})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{areas.map(area=><SelectItem key={area.id} value={area.id}>{area.name}</SelectItem>)}</SelectContent></Select></label>}
+              <Button type="submit" disabled={ticket.status==="closed"}><Pencil/>Salvar alterações</Button>
+              {ticket.status==="closed"&&<small>Chamados encerrados permanecem somente para consulta.</small>}
+            </form>
           </TabsContent>
           <TabsContent value="history">
             <div className="history status-timeline">
@@ -1198,6 +1248,7 @@ type AIValidRules = {
   require_summary_fields: boolean;
 };
 type AIRuntimeForm = {
+  assistant?: AssistantMode;
   model: string;
   embedding_model: string;
   conversation_source: "ollama" | "external";
@@ -1318,6 +1369,7 @@ function AISettings() {
   });
   const [apiKey, setApiKey] = useState("");
   const [runtime, setRuntime] = useState<AIRuntimeForm>(EMPTY_RUNTIME);
+  const [runtimeAssistant, setRuntimeAssistant] = useState<AssistantMode>("support");
   const [catalog, setCatalog] = useState<AIModelCatalog>({
     ollama: [],
     external: [],
@@ -1357,7 +1409,7 @@ function AISettings() {
           api_base_url: string | null;
           has_api_key: boolean;
         }>("/api/admin/ai/connection"),
-        api<AIRuntimeForm>("/api/admin/ai/runtime"),
+        api<AIRuntimeForm>("/api/admin/ai/runtime?assistant=support"),
       ]);
       setConnection({
         ...storedConnection,
@@ -1374,6 +1426,10 @@ function AISettings() {
   useEffect(() => {
     void load();
   }, [load]);
+  async function selectRuntimeAssistant(value: string) {
+    const assistant=value as AssistantMode;setRuntimeAssistant(assistant);setError("");
+    try{setRuntime(await api<AIRuntimeForm>(`/api/admin/ai/runtime?assistant=${assistant}`));setStatus(`Configuração do ${assistant==="support"?"Assistente virtual":"Abrir um chamado"} carregada`)}catch(e){setError(e instanceof Error?e.message:"Erro ao carregar configuração")}
+  }
   function chooseProvider(provider: AIProvider) {
     setConnection({
       ...connection,
@@ -1424,10 +1480,10 @@ function AISettings() {
     try {
       const result = await api<AIRuntimeForm & { saved: boolean }>(
         "/api/admin/ai/runtime",
-        { method: "PUT", body: JSON.stringify(runtime) },
+        { method: "PUT", body: JSON.stringify({ ...runtime, assistant: runtimeAssistant }) },
       );
       setRuntime(result);
-      setNotice("Configuração dos modelos salva.");
+      setNotice(`Configuração de ${runtimeAssistant==="support"?"Assistente virtual":"Abrir um chamado"} salva.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro ao salvar modelos");
     } finally {
@@ -1443,7 +1499,7 @@ function AISettings() {
         model: string;
         latency_ms: number;
         message: string;
-      }>("/api/admin/ai/test", { method: "POST" });
+      }>(`/api/admin/ai/test?assistant=${runtimeAssistant}`, { method: "POST" });
       setStatus(
         `${result.model} respondeu corretamente em ${result.latency_ms} ms`,
       );
@@ -1696,16 +1752,22 @@ function AISettings() {
           </div>
         </TabsContent>
         <TabsContent value="configure" className="ai-tab-panel">
+          <Tabs value={runtimeAssistant} onValueChange={selectRuntimeAssistant} className="assistant-runtime-tabs">
+            <TabsList>
+              <TabsTrigger value="support">Assistente virtual</TabsTrigger>
+              <TabsTrigger value="intake">Abrir um chamado</TabsTrigger>
+            </TabsList>
+          </Tabs>
           <section className="ai-card runtime-card">
             <header>
               <i>
                 <Settings />
               </i>
               <span>
-                <h2>Execução dos modelos</h2>
+                <h2>{runtimeAssistant==="support"?"Assistente virtual":"Abertura de chamados"}</h2>
                 <p>{status}</p>
               </span>
-              <em>Conversa e embeddings independentes</em>
+              <em>{runtimeAssistant==="support"?"Orientação mais flexível":"Triagem com regras rigorosas"}</em>
             </header>
             <div className="runtime-grid">
               <label>
@@ -2086,26 +2148,36 @@ function RuleSwitch({
   );
 }
 
+const auditLabels:Record<string,string>={"auth.login":"Login realizado","auth.login_failed":"Tentativa de login recusada","auth.login_denied":"Login bloqueado","auth.logout":"Logout realizado","ticket.created":"Chamado criado","ticket.updated":"Chamado editado","ticket.status_changed":"Etapa alterada","ticket.resolution_saved":"Resolução salva","provider.created":"Prestador criado","provider.updated":"Prestador editado","provider.deleted":"Prestador excluído","area.created":"Área criada","area.updated":"Área editada","company.created":"Empresa criada","company.updated":"Empresa editada","account.updated":"Conta atualizada","ai.connection_updated":"Conexão de IA alterada","ai.runtime_updated":"Modelo configurado"};
+function AuditLogPage({platform}:{platform:boolean}){
+  const [entries,setEntries]=useState<AuditEntry[]>([]);const [error,setError]=useState("");const [action,setAction]=useState("all");
+  const load=useCallback(()=>api<AuditEntry[]>(platform?"/api/platform/audit":"/api/company/audit").then(setEntries).catch(e=>setError(e.message)),[platform]);useEffect(()=>{load()},[load]);
+  const actions=Array.from(new Set(entries.map(item=>item.action))).sort();const shown=action==="all"?entries:entries.filter(item=>item.action===action);
+  return <><PageHeader eyebrow={platform?"PLATAFORMA":"EMPRESA"} title="Logs de auditoria" actions={<Button variant="outline" onClick={load}><RefreshCw/>Atualizar</Button>}/>{error&&<div className="form-error">{error}</div>}<section className="workspace audit-workspace"><div className="toolbar"><strong><ScrollText/>Ações registradas</strong><Select value={action} onValueChange={setAction}><SelectTrigger className="audit-filter"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="all">Todas as ações</SelectItem>{actions.map(value=><SelectItem key={value} value={value}>{auditLabels[value]||value}</SelectItem>)}</SelectContent></Select></div><div className="table-wrap"><table><thead><tr><th>Data</th>{platform&&<th>Empresa</th>}<th>Responsável</th><th>Ação</th><th>Alvo</th><th>Detalhes</th></tr></thead><tbody>{shown.map(item=><tr key={item.id}><td>{formatDate(item.created_at)}</td>{platform&&<td>{item.tenant_name||"—"}</td>}<td><strong>{item.actor_name}</strong><small>{item.actor_role}</small></td><td>{auditLabels[item.action]||item.action}</td><td>{item.target_type}{item.target_id?` · ${item.target_id.slice(0,8)}`:""}</td><td><code>{Object.entries(item.details).map(([key,value])=>`${key}: ${Array.isArray(value)?value.join(", "):String(value)}`).join(" · ")||"—"}</code></td></tr>)}</tbody></table></div></section></>;
+}
+
 function CompanyManagement() {
-  const [companies,setCompanies]=useState<Company[]>([]);const [error,setError]=useState("");const [notice,setNotice]=useState("");
+  const [companies,setCompanies]=useState<Company[]>([]);const [error,setError]=useState("");const [notice,setNotice]=useState("");const [editing,setEditing]=useState<Company|null>(null);
   const [form,setForm]=useState({name:"",public_slug:"",manager_name:"",manager_email:"",manager_password:""});
-  const load=useCallback(()=>api<Company[]>("/api/platform/companies").then(setCompanies).catch(e=>setError(e.message)),[]);
-  useEffect(()=>{load()},[load]);
+  const load=useCallback(()=>api<Company[]>("/api/platform/companies").then(setCompanies).catch(e=>setError(e.message)),[]);useEffect(()=>{load()},[load]);
   async function create(e:FormEvent){e.preventDefault();setError("");setNotice("");try{const result=await api<{name:string;public_path:string}>("/api/platform/companies",{method:"POST",body:JSON.stringify(form)});setNotice(`${result.name} criada. Link público: ${location.origin}${result.public_path}`);setForm({name:"",public_slug:"",manager_name:"",manager_email:"",manager_password:""});load()}catch(err){setError(err instanceof Error?err.message:"Erro ao criar empresa")}}
-  return <><PageHeader eyebrow="PLATAFORMA" title="Empresas"/>{error&&<div className="form-error">{error}</div>}{notice&&<div className="form-success">{notice}</div>}<div className="users-layout"><form className="user-form" onSubmit={create}><h2>Nova empresa</h2><label>Nome<Input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} required/></label><label>Identificador do link<Input value={form.public_slug} onChange={e=>setForm({...form,public_slug:e.target.value.toLowerCase().replace(/[^a-z0-9-]/g,"")})} placeholder="minha-empresa" pattern="[a-z0-9-]{2,80}" required/></label><label>Nome do responsável<Input value={form.manager_name} onChange={e=>setForm({...form,manager_name:e.target.value})} required/></label><label>E-mail do responsável<Input type="email" value={form.manager_email} onChange={e=>setForm({...form,manager_email:e.target.value})} required/></label><label>Senha temporária<Input type="password" minLength={12} value={form.manager_password} onChange={e=>setForm({...form,manager_password:e.target.value})} required/></label><Button type="submit"><Plus/>Criar empresa</Button></form><section className="user-list"><h2>Empresas cadastradas</h2>{companies.map(company=><article key={company.id}><b><Building2/></b><span><strong>{company.name}</strong><small>{company.public_slug} · {company.managers} gestor(es) · {company.areas} área(s)</small><a href={company.public_path}><ExternalLink/> Abrir portal</a></span><Badge variant="outline">{company.active?"Ativa":"Inativa"}</Badge></article>)}</section></div></>;
+  async function saveEdit(e:FormEvent){e.preventDefault();if(!editing)return;setError("");try{await api(`/api/platform/companies/${editing.id}`,{method:"PATCH",body:JSON.stringify(editing)});setEditing(null);setNotice("Empresa atualizada.");load()}catch(err){setError(err instanceof Error?err.message:"Erro ao editar empresa")}}
+  return <><PageHeader eyebrow="PLATAFORMA" title="Empresas"/>{error&&<div className="form-error">{error}</div>}{notice&&<div className="form-success">{notice}</div>}<div className="users-layout"><form className="user-form" onSubmit={create}><h2>Nova empresa</h2><label>Nome<Input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} required/></label><label>Identificador do link<Input value={form.public_slug} onChange={e=>setForm({...form,public_slug:e.target.value.toLowerCase().replace(/[^a-z0-9-]/g,"")})} placeholder="minha-empresa" pattern="[a-z0-9-]{2,80}" required/></label><label>Nome do responsável<Input value={form.manager_name} onChange={e=>setForm({...form,manager_name:e.target.value})} required/></label><label>E-mail do responsável<Input type="email" value={form.manager_email} onChange={e=>setForm({...form,manager_email:e.target.value})} required/></label><label>Senha temporária<Input type="password" minLength={12} value={form.manager_password} onChange={e=>setForm({...form,manager_password:e.target.value})} required/></label><Button type="submit"><Plus/>Criar empresa</Button></form><section className="user-list"><h2>Empresas cadastradas</h2>{companies.map(company=><article key={company.id}><b><Building2/></b><span><strong>{company.name}</strong><small>{company.manager_name} · {company.manager_email}</small><a href={company.public_path}><ExternalLink/> Abrir portal</a></span><Badge variant="outline">{company.active?"Ativa":"Inativa"}</Badge><Button variant="outline" size="icon" aria-label={`Editar ${company.name}`} onClick={()=>setEditing({...company})}><Pencil/></Button></article>)}</section></div><Dialog open={!!editing} onOpenChange={open=>!open&&setEditing(null)}><DialogContent><DialogHeader><DialogTitle>Editar empresa</DialogTitle><DialogDescription>Altere a organização e a conta gestora. O histórico será preservado.</DialogDescription></DialogHeader>{editing&&<form className="dialog-form" onSubmit={saveEdit}><label>Nome<Input value={editing.name} onChange={e=>setEditing({...editing,name:e.target.value})}/></label><label>Identificador<Input value={editing.public_slug} onChange={e=>setEditing({...editing,public_slug:e.target.value.toLowerCase().replace(/[^a-z0-9-]/g,"")})}/></label><label>Nome do responsável<Input value={editing.manager_name} onChange={e=>setEditing({...editing,manager_name:e.target.value})}/></label><label>E-mail do responsável<Input type="email" value={editing.manager_email} onChange={e=>setEditing({...editing,manager_email:e.target.value})}/></label><label className="switch-line"><span><strong>Empresa ativa</strong><small>Ao desativar, login e portal público são bloqueados.</small></span><Switch checked={editing.active} onCheckedChange={active=>setEditing({...editing,active})}/></label><DialogFooter><Button type="submit">Salvar alterações</Button></DialogFooter></form>}</DialogContent></Dialog></>;
 }
 
 function AreaManagement() {
-  const [areas,setAreas]=useState<Area[]>([]);const [name,setName]=useState("");const [error,setError]=useState("");
+  const [areas,setAreas]=useState<Area[]>([]);const [name,setName]=useState("");const [error,setError]=useState("");const [editing,setEditing]=useState<Area|null>(null);
   const load=useCallback(()=>api<Area[]>("/api/company/areas").then(setAreas).catch(e=>setError(e.message)),[]);useEffect(()=>{load()},[load]);
   async function create(e:FormEvent){e.preventDefault();setError("");try{await api("/api/company/areas",{method:"POST",body:JSON.stringify({name})});setName("");load()}catch(err){setError(err instanceof Error?err.message:"Erro ao criar área")}}
-  return <><PageHeader eyebrow="EMPRESA" title="Áreas de atendimento"/>{error&&<div className="form-error">{error}</div>}<div className="users-layout"><form className="user-form" onSubmit={create}><h2>Nova área</h2><p>Áreas isolam prestadores, chamados e fontes da IA.</p><label>Nome<Input value={name} onChange={e=>setName(e.target.value)} placeholder="Ex.: Financeiro" required/></label><Button type="submit"><Plus/>Criar área</Button></form><section className="user-list"><h2>Áreas cadastradas</h2>{areas.map(area=><article key={area.id}><b><Layers3/></b><span><strong>{area.name}</strong><small>Base e chamados próprios</small></span><Badge variant="outline">{area.active?"Ativa":"Inativa"}</Badge></article>)}</section></div></>;
+  async function save(e:FormEvent){e.preventDefault();if(!editing)return;setError("");try{await api(`/api/company/areas/${editing.id}`,{method:"PATCH",body:JSON.stringify({name:editing.name,active:editing.active})});setEditing(null);load()}catch(err){setError(err instanceof Error?err.message:"Erro ao editar área")}}
+  return <><PageHeader eyebrow="EMPRESA" title="Áreas de atendimento"/>{error&&<div className="form-error">{error}</div>}<div className="users-layout"><form className="user-form" onSubmit={create}><h2>Nova área</h2><p>Áreas isolam prestadores, chamados e fontes da IA.</p><label>Nome<Input value={name} onChange={e=>setName(e.target.value)} placeholder="Ex.: Financeiro" required/></label><Button type="submit"><Plus/>Criar área</Button></form><section className="user-list"><h2>Áreas cadastradas</h2>{areas.map(area=><article key={area.id}><b><Layers3/></b><span><strong>{area.name}</strong><small>Base e chamados próprios</small></span><Badge variant="outline">{area.active?"Ativa":"Inativa"}</Badge><Button variant="outline" size="icon" aria-label={`Editar ${area.name}`} onClick={()=>setEditing({...area})}><Pencil/></Button></article>)}</section></div><Dialog open={!!editing} onOpenChange={open=>!open&&setEditing(null)}><DialogContent><DialogHeader><DialogTitle>Editar área</DialogTitle><DialogDescription>Prestadores ativos precisam ser movidos ou desativados antes da área.</DialogDescription></DialogHeader>{editing&&<form className="dialog-form" onSubmit={save}><label>Nome<Input value={editing.name} onChange={e=>setEditing({...editing,name:e.target.value})}/></label><label className="switch-line"><span><strong>Área ativa</strong><small>Áreas inativas deixam de aparecer no portal.</small></span><Switch checked={editing.active} onCheckedChange={active=>setEditing({...editing,active})}/></label><DialogFooter><Button type="submit">Salvar alterações</Button></DialogFooter></form>}</DialogContent></Dialog></>;
 }
 
 function MyAccount({user,onSaved}:{user:User;onSaved:(user:User)=>void}) {
   const [name,setName]=useState(user.name);const [email,setEmail]=useState(user.email);const [photo,setPhoto]=useState<File|null>(null);const [error,setError]=useState("");const [notice,setNotice]=useState("");const [busy,setBusy]=useState(false);
   async function save(e:FormEvent){e.preventDefault();setBusy(true);setError("");setNotice("");const data=new FormData();data.append("name",name);data.append("email",email);if(photo)data.append("avatar",photo);try{const updated=await api<User>("/api/account",{method:"PUT",body:data});onSaved(updated);setNotice("Dados da conta atualizados.");setPhoto(null)}catch(err){setError(err instanceof Error?err.message:"Erro ao atualizar conta")}finally{setBusy(false)}}
-  return <><PageHeader eyebrow="CONTA" title="Minha conta"/><form className="account-form" onSubmit={save}>{error&&<div className="form-error">{error}</div>}{notice&&<div className="form-success">{notice}</div>}<div className="account-photo">{user.avatar_url?<i className="account-avatar" role="img" aria-label="Foto do perfil" style={{backgroundImage:`url(${user.avatar_url})`}}/>:<UserCircle/>}<label><Camera/> Escolher foto<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setPhoto(e.target.files?.[0]||null)}/></label><small>JPEG, PNG ou WebP · máximo de 2 MB.</small></div><label>Nome<Input value={name} onChange={e=>setName(e.target.value)} maxLength={120} required/></label><label>E-mail<Input type="email" value={email} onChange={e=>setEmail(e.target.value)} maxLength={254} required/></label>{user.area&&<label>Área<Input value={user.area.name} disabled/></label>}<Button type="submit" disabled={busy}>{busy?"Salvando…":"Salvar alterações"}</Button></form></>;
+  const companyAdmin=user.role==="company_admin";
+  return <><PageHeader eyebrow="CONTA" title="Minha conta"/><form className="account-form" onSubmit={save}>{error&&<div className="form-error">{error}</div>}{notice&&<div className="form-success">{notice}</div>}<div className="account-photo">{user.avatar_url?<i className="account-avatar" role="img" aria-label="Foto do perfil" style={{backgroundImage:`url(${user.avatar_url})`}}/>:<UserCircle/>}<label><Camera/> Escolher foto<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setPhoto(e.target.files?.[0]||null)}/></label><small>JPEG, PNG ou WebP · máximo de 2 MB.</small></div><label>Nome<Input value={name} onChange={e=>setName(e.target.value)} maxLength={120} required/></label><label>E-mail<Input type="email" value={email} onChange={e=>setEmail(e.target.value)} maxLength={254} required disabled={companyAdmin}/>{companyAdmin&&<small>Solicite ao administrador master a alteração do e-mail.</small>}</label><label>Organização<Input value={user.tenant?.name||""} disabled/>{companyAdmin&&<small>A organização só pode ser alterada pelo administrador master.</small>}</label>{user.area&&<label>Área<Input value={user.area.name} disabled/></label>}<Button type="submit" disabled={busy}>{busy?"Salvando…":"Salvar alterações"}</Button></form></>;
 }
 
 function KnowledgeBase() {
@@ -2254,6 +2326,7 @@ function KnowledgeBase() {
 function UserManagement() {
   const [users, setUsers] = useState<User[]>([]);
   const [areas,setAreas]=useState<Area[]>([]);
+  const [editing,setEditing]=useState<User|null>(null);
   const [form, setForm] = useState({
     name: "",
     email: "",
@@ -2272,7 +2345,7 @@ function UserManagement() {
   useEffect(() => {
     load();
   }, [load]);
-  useEffect(()=>{api<Area[]>("/api/company/areas").then(value=>{setAreas(value);setForm(current=>({...current,area_id:current.area_id||value[0]?.id||""}))}).catch(e=>setError(e.message))},[]);
+  useEffect(()=>{api<Area[]>("/api/company/areas").then(value=>{setAreas(value);setForm(current=>({...current,area_id:current.area_id||value.find(area=>area.active)?.id||""}))}).catch(e=>setError(e.message))},[]);
   async function create(e: FormEvent) {
     e.preventDefault();
     setError("");
@@ -2281,12 +2354,14 @@ function UserManagement() {
         method: "POST",
         body: JSON.stringify(form),
       });
-      setForm({ name: "", email: "", password: "", area_id:areas[0]?.id||"", role: "agent" });
+      setForm({ name: "", email: "", password: "", area_id:areas.find(area=>area.active)?.id||"", role: "agent" });
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro");
     }
   }
+  async function saveEdit(e:FormEvent){e.preventDefault();if(!editing)return;setError("");try{await api(`/api/company/users/${editing.id}`,{method:"PATCH",body:JSON.stringify({name:editing.name,email:editing.email,area_id:editing.area_id,active:editing.active})});setEditing(null);load()}catch(err){setError(err instanceof Error?err.message:"Erro ao editar prestador")}}
+  async function remove(user:User){setError("");try{await api(`/api/company/users/${user.id}`,{method:"DELETE"});load()}catch(err){setError(err instanceof Error?err.message:"Erro ao excluir prestador")}}
   return (
     <>
       <PageHeader eyebrow="ADMINISTRAÇÃO" title="Prestadores" />
@@ -2321,7 +2396,7 @@ function UserManagement() {
               required
             />
           </label>
-          <label>Área<Select value={form.area_id} onValueChange={area_id=>setForm({...form,area_id})}><SelectTrigger><SelectValue placeholder="Selecione a área"/></SelectTrigger><SelectContent>{areas.map(area=><SelectItem key={area.id} value={area.id}>{area.name}</SelectItem>)}</SelectContent></Select></label>
+          <label>Área<Select value={form.area_id} onValueChange={area_id=>setForm({...form,area_id})}><SelectTrigger><SelectValue placeholder="Selecione a área"/></SelectTrigger><SelectContent>{areas.filter(area=>area.active).map(area=><SelectItem key={area.id} value={area.id}>{area.name}</SelectItem>)}</SelectContent></Select></label>
           <Button type="submit">
             <Plus /> Criar prestador
           </Button>
@@ -2341,11 +2416,14 @@ function UserManagement() {
                 <strong>{u.name}</strong>
                 <small>{u.email} · {u.area_name}</small>
               </span>
-              <Badge variant="outline">Prestador</Badge>
+              <Badge variant="outline">{u.active?"Ativo":"Inativo"}</Badge>
+              <Button variant="outline" size="icon" aria-label={`Editar ${u.name}`} onClick={()=>setEditing({...u})}><Pencil/></Button>
+              <AlertDialog><AlertDialogTrigger asChild><Button variant="outline" size="icon" aria-label={`Excluir ${u.name}`}><Trash2/></Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Excluir este prestador?</AlertDialogTitle><AlertDialogDescription>O acesso será removido, mas o histórico de ações e chamados será preservado.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction onClick={()=>remove(u)}>Excluir prestador</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
             </article>
           ))}
         </section>
       </div>
+      <Dialog open={!!editing} onOpenChange={open=>!open&&setEditing(null)}><DialogContent><DialogHeader><DialogTitle>Editar prestador</DialogTitle><DialogDescription>Atualize o cadastro, a área e o acesso.</DialogDescription></DialogHeader>{editing&&<form className="dialog-form" onSubmit={saveEdit}><label>Nome<Input value={editing.name} onChange={e=>setEditing({...editing,name:e.target.value})}/></label><label>E-mail<Input type="email" value={editing.email} onChange={e=>setEditing({...editing,email:e.target.value})}/></label><label>Área<Select value={editing.area_id} onValueChange={area_id=>setEditing({...editing,area_id})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{areas.filter(area=>area.active||area.id===editing.area_id).map(area=><SelectItem key={area.id} value={area.id}>{area.name}</SelectItem>)}</SelectContent></Select></label><label className="switch-line"><span><strong>Prestador ativo</strong><small>Prestadores inativos não conseguem entrar.</small></span><Switch checked={editing.active!==false} onCheckedChange={active=>setEditing({...editing,active})}/></label><DialogFooter><Button type="submit">Salvar alterações</Button></DialogFooter></form>}</DialogContent></Dialog>
     </>
   );
 }
@@ -2398,6 +2476,7 @@ function PublicPortal({ slug,onBack }: { slug:string;onBack: () => void }) {
   const [state, setState] = useState<string | null>(null);
   const [questionCount, setQuestionCount] = useState(0);
   const [summary, setSummary] = useState<TicketDraft | null>(null);
+  const [attachments,setAttachments]=useState<File[]>([]);
   const [offerTicket, setOfferTicket] = useState(false);
   const [generationElapsed, setGenerationElapsed] = useState(0);
   const [generationTokens, setGenerationTokens] = useState(0);
@@ -2428,6 +2507,7 @@ function PublicPortal({ slug,onBack }: { slug:string;onBack: () => void }) {
     setState(null);
     setQuestionCount(0);
     setSummary(null);
+    setAttachments([]);
     setOfferTicket(false);
     setChatError("");
     setLastRequest(null);
@@ -2527,6 +2607,7 @@ function PublicPortal({ slug,onBack }: { slug:string;onBack: () => void }) {
     setState(null);
     setQuestionCount(0);
     setSummary(null);
+    setAttachments([]);
     setOfferTicket(false);
     setChatError("");
     setLastRequest(null);
@@ -2554,18 +2635,9 @@ function PublicPortal({ slug,onBack }: { slug:string;onBack: () => void }) {
     setBusy(true);
     setError("");
     try {
-      const result = await api<{ protocol: number }>(
-        `/api/public/${encodeURIComponent(slug)}/tickets`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            ...summary,
-            area_id:areaId,
-            assistant_mode: "intake",
-            public_context: context,
-          }),
-        },
-      );
+      if(attachments.length>5||attachments.reduce((total,file)=>total+file.size,0)>15*1024*1024)throw new Error("Envie no máximo 5 imagens somando até 15 MB.");
+      const payload={...summary,area_id:areaId,assistant_mode:"intake",public_context:context};let result:{protocol:number};
+      if(attachments.length){const body=new FormData();body.append("payload",JSON.stringify(payload));attachments.forEach(file=>body.append("files",file));result=await api<{protocol:number}>(`/api/public/${encodeURIComponent(slug)}/tickets/with-attachments`,{method:"POST",body})}else{result=await api<{protocol:number}>(`/api/public/${encodeURIComponent(slug)}/tickets`,{method:"POST",body:JSON.stringify(payload)})}
       setProtocol(result.protocol);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro ao criar chamado");
@@ -2826,6 +2898,7 @@ function PublicPortal({ slug,onBack }: { slug:string;onBack: () => void }) {
                   </SelectContent>
                 </Select>
               </label>
+              <label className="wide ticket-image-upload"><span><Paperclip/> Imagens do problema</span><input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={e=>{const files=Array.from(e.target.files||[]);const total=files.reduce((sum,file)=>sum+file.size,0);if(files.length>5||total>15*1024*1024){setError("Envie no máximo 5 imagens somando até 15 MB.");e.target.value="";setAttachments([])}else{setError("");setAttachments(files)}}}/><small>Até 5 imagens JPEG, PNG ou WebP, somando no máximo 15 MB.</small>{attachments.length>0&&<em>{attachments.length} arquivo(s) · {(attachments.reduce((sum,file)=>sum+file.size,0)/1024/1024).toFixed(2)} MB</em>}</label>
             </div>
             <Button onClick={submitTicket} disabled={busy}>
               <Send /> Enviar chamado

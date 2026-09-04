@@ -28,7 +28,7 @@ class AIConnectionIn(BaseModel):
 class ValidResponseRules(BaseModel):
     allow_plain_text_repair:bool=True;reject_repeated_questions:bool=True;require_context_reference:bool=False;require_summary_fields:bool=True
 class AIRuntimeIn(BaseModel):
-    model:str=Field(pattern=r"^[a-zA-Z0-9._:/-]{1,120}$");embedding_model:str=Field(pattern=r"^[a-zA-Z0-9._:/-]{1,120}$");conversation_source:Literal["ollama","external"]="ollama";embedding_source:Literal["ollama","external"]="ollama";context_size:int=Field(ge=1024,le=32768);max_tokens:int=Field(ge=64,le=8192);temperature:float=Field(ge=0,le=1);response_timeout_seconds:int=Field(ge=15,le=300);valid_response_rules:ValidResponseRules=Field(default_factory=ValidResponseRules)
+    assistant:Literal["support","intake"]="support";model:str=Field(pattern=r"^[a-zA-Z0-9._:/-]{1,120}$");embedding_model:str=Field(pattern=r"^[a-zA-Z0-9._:/-]{1,120}$");conversation_source:Literal["ollama","external"]="ollama";embedding_source:Literal["ollama","external"]="ollama";context_size:int=Field(ge=1024,le=32768);max_tokens:int=Field(ge=64,le=8192);temperature:float=Field(ge=0,le=1);response_timeout_seconds:int=Field(ge=15,le=300);valid_response_rules:ValidResponseRules=Field(default_factory=ValidResponseRules)
 class SkillImportIn(BaseModel):
     source_url:str=Field(min_length=12,max_length=1000);scope:Literal["all","intake","support"]="all"
 class SkillUpdateIn(BaseModel):
@@ -41,6 +41,14 @@ class CompanyCreateIn(BaseModel):
     name:str=Field(min_length=2,max_length=120);public_slug:str=Field(pattern=r"^[a-z0-9-]{2,80}$");manager_name:str=Field(min_length=2,max_length=120);manager_email:str=Field(max_length=254);manager_password:str=Field(min_length=12,max_length=128)
 class AreaCreateIn(BaseModel):
     name:str=Field(min_length=2,max_length=120)
+class AreaUpdateIn(BaseModel):
+    name:str=Field(min_length=2,max_length=120);active:bool
+class UserUpdateIn(BaseModel):
+    name:str=Field(min_length=2,max_length=120);email:str=Field(max_length=254);area_id:uuid.UUID;active:bool
+class CompanyUpdateIn(BaseModel):
+    name:str=Field(min_length=2,max_length=120);public_slug:str=Field(pattern=r"^[a-z0-9-]{2,80}$");manager_name:str=Field(min_length=2,max_length=120);manager_email:str=Field(max_length=254);active:bool
+class TicketUpdateIn(BaseModel):
+    requester_name:str=Field(min_length=2,max_length=120);department:str=Field(min_length=2,max_length=120);contact:str|None=Field(default=None,max_length=254);title:str=Field(min_length=2,max_length=180);summary:str=Field(min_length=10,max_length=5000);product:str=Field(min_length=2,max_length=80);priority:Literal["low","normal","high"];area_id:uuid.UUID|None=None
 class PublicChatIn(BaseModel):
     area_id:uuid.UUID;public_context:str;assistant:Literal["intake","support"]="intake";action:Literal["message","summarize"]="message";conversation_state:str|None=None;requester_name:str=Field(default="",max_length=120);department:str=Field(default="",max_length=120);messages:list[dict[str,object]]=Field(min_length=1,max_length=16)
 class TicketStatusIn(BaseModel):

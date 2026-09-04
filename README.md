@@ -28,7 +28,7 @@ Guarde esse valor e não o altere depois: ele protege as credenciais já gravada
 Na conta empresarial, crie as áreas e depois os prestadores, atribuindo uma área a cada conta. O administrador da empresa também escolhe a área de cada documento enviado. A área **Inteligência Artificial**, exclusiva da plataforma, possui três menus:
 
 - **Adicionar Modelos:** reconhece todos os modelos reais do Ollama por `/api/tags` e conecta uma API externa compatível com Chat Completions. Existem presets para OpenAI, DeepSeek, Groq e OpenRouter, além de URL personalizada.
-- **Configurar Modelos:** seleciona separadamente o modelo de conversação e o modelo de embeddings, inclusive com origens diferentes. Também configura contexto máximo, tokens por resposta, temperatura, tempo limite entre 15 e 300 segundos e as regras que validam a saída do modelo.
+- **Configurar Modelos:** possui perfis independentes para **Assistente virtual** e **Abrir um chamado**. Em cada perfil, seleciona separadamente conversação e embeddings, inclusive com origens diferentes, além de contexto, tokens, temperatura, limite entre 15 e 300 segundos e regras de validação.
 - **Skills:** importa um arquivo Markdown por link HTTPS direto, permite escolher em qual assistente ele atua, testar a instrução com o modelo de conversação e ativá-la somente depois da validação. Apenas uma Skill de comportamento fica ativa por assistente; ativar outra substitui a anterior naquele escopo.
 
 Depois de salvar a configuração, use **Testar modelo**. O teste confirma que o modelo selecionado consegue cumprir o contrato de resposta antes de colocá-lo no chat. Modelos identificados pelo Ollama como exclusivos para embeddings não podem ser salvos como modelo de conversação.
@@ -45,6 +45,12 @@ O assistente virtual continua podendo usar o conteúdo completo das Skills e da 
 As Skills são tratadas como instruções administrativas não confiáveis: somente arquivos de texto/Markdown de até 128 KB são aceitos, redirecionamentos e destinos privados são bloqueados, o conteúdo nunca é executado e não pode substituir as regras de segurança ou permissões do sistema.
 
 Em **Base de conhecimento**, administradores da empresa podem enviar PDF, DOCX, TXT e Markdown de até 10 MB para uma área específica. Os arquivos são validados, têm o texto extraído e são divididos em trechos pesquisáveis. O usuário seleciona a área no portal, e a IA consulta somente documentos, resoluções e chamados semelhantes daquela empresa e área. Instalações existentes recebem a área **Geral** automaticamente durante a inicialização da API.
+
+Na etapa final da abertura, o solicitante pode anexar até 5 imagens JPEG, PNG ou WebP, somando no máximo 15 MB. Os anexos são validados pelo conteúdo, ficam vinculados ao chamado e só podem ser consultados por usuários autorizados da mesma empresa e área.
+
+O Kanban exibe todas as etapas em colunas laterais com marcadores de cor e rolagem horizontal. Os chamados podem ser filtrados por texto/problema, setor, área, produto, prioridade e status e possuem uma aba própria de edição. Administradores da empresa podem editar, ativar e desativar áreas, e editar, ativar, desativar ou excluir logicamente prestadores. O administrador master pode editar e ativar/desativar empresas e a conta gestora. A exclusão lógica preserva os vínculos históricos.
+
+Os menus de **Auditoria** registram ações operacionais sem copiar descrições de chamados, senhas ou segredos. O administrador da empresa consulta somente eventos do próprio ambiente; o administrador master consulta eventos de todas as empresas. O administrador da empresa pode alterar seu nome e foto, mas precisa solicitar ao master mudanças de e-mail ou organização.
 
 Se você tentou uma versão anterior que falhou durante a imagem web, force a reconstrução com `docker compose build --no-cache web` antes de executar novamente.
 
@@ -74,5 +80,8 @@ Se você tentou uma versão anterior que falhou durante a imagem web, force a re
 - perguntas repetidas são rejeitadas no backend e substituídas por uma pergunta de outro assunto;
 - perguntas vagas, listas e saídas inválidas são reparadas ou substituídas por fallback determinístico;
 - cada mudança de etapa, inclusive **Resolvido** e **Encerrado**, recebe data e responsável em histórico próprio.
+- anexos de chamados possuem limite total, quantidade, tipos permitidos e verificação da assinatura real do arquivo;
+- logs de auditoria são separados por empresa, com visão global exclusiva do administrador master;
+- exclusão de prestadores é lógica para preservar autoria, histórico e integridade referencial.
 
 Para produção externa, coloque um proxy HTTPS na frente do `web`, remova a porta pública da API e substitua o limitador em memória por Redis.
