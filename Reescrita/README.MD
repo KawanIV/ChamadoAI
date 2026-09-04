@@ -1,0 +1,1 @@
+Reescrita da aplicação na mão
